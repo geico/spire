@@ -93,10 +93,7 @@ func (p *Plugin) CountRegistrationEntries(ctx context.Context, req *datastorev1.
 }
 
 // TODO(tjons): should this really be there with no validation? is this effectively unused?
-func (p *Plugin) CreateRegistrationEntry(
-	ctx context.Context,
-	req *datastorev1.CreateRegistrationEntryRequest,
-) (*datastorev1.CreateRegistrationEntryResponse, error) {
+func (p *Plugin) CreateRegistrationEntry(ctx context.Context, req *datastorev1.CreateRegistrationEntryRequest) (*datastorev1.CreateRegistrationEntryResponse, error) {
 	if req.GetEntry() == nil {
 		return nil, newValidationError("invalid request: missing registration entry")
 	}
@@ -143,10 +140,7 @@ func (p *Plugin) CreateRegistrationEntry(
 	}, err
 }
 
-func (p *Plugin) createRegistrationEntry(
-	ctx context.Context,
-	entry *datastorev1.RegistrationEntry,
-) (*datastorev1.RegistrationEntry, error) {
+func (p *Plugin) createRegistrationEntry(ctx context.Context, entry *datastorev1.RegistrationEntry) (*datastorev1.RegistrationEntry, error) {
 	var entryID string
 
 	if len(entry.EntryId) > 0 {
@@ -318,10 +312,7 @@ func validateRegistrationEntry(entry *datastorev1.RegistrationEntry) error {
 	return nil
 }
 
-func (p *Plugin) CreateOrReturnRegistrationEntry(
-	ctx context.Context,
-	req *datastorev1.CreateOrReturnRegistrationEntryRequest,
-) (*datastorev1.CreateOrReturnRegistrationEntryResponse, error) {
+func (p *Plugin) CreateOrReturnRegistrationEntry(ctx context.Context, req *datastorev1.CreateOrReturnRegistrationEntryRequest) (*datastorev1.CreateOrReturnRegistrationEntryResponse, error) {
 	if err := validateRegistrationEntry(req.Entry); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -367,10 +358,7 @@ func (p *Plugin) CreateOrReturnRegistrationEntry(
 	}, nil
 }
 
-func (p *Plugin) DeleteRegistrationEntry(
-	ctx context.Context,
-	req *datastorev1.DeleteRegistrationEntryRequest,
-) (*datastorev1.DeleteRegistrationEntryResponse, error) {
+func (p *Plugin) DeleteRegistrationEntry(ctx context.Context, req *datastorev1.DeleteRegistrationEntryRequest) (*datastorev1.DeleteRegistrationEntryResponse, error) {
 	entries, err := p.fetchRegistrationEntries(ctx, []string{req.EntryId})
 	if err != nil {
 		return nil, newWrappedCassandraError(err)
@@ -398,26 +386,20 @@ func (p *Plugin) DeleteRegistrationEntry(
 func (p *Plugin) deleteRegistrationEntry(ctx context.Context, re *datastorev1.RegistrationEntry) error {
 	b := p.db.session.Batch(gocql.LoggedBatch).Consistency(p.db.cfg.WriteConsistency)
 
-	deleteEntryRowsQuery := qb.NewDelete().
-		From("registered_entries").
-		Where("entry_id", qb.Equals(re.EntryId))
+	const deleteEntryRowsQuery = `DELETE FROM registered_entries WHERE entry_id = ?`
+	const deleteFederatedBundlesQuery = `DELETE FROM bundles WHERE trust_domain = ? AND federated_entry_id = ?`
 	b.Entries = []gocql.BatchEntry{
 		{
-			Stmt:       deleteEntryRowsQuery.ToCQL(),
-			Args:       deleteEntryRowsQuery.QueryValues(),
+			Stmt:       deleteEntryRowsQuery,
+			Args:       []any{re.EntryId},
 			Idempotent: true,
 		},
 	}
 
 	for _, ftd := range re.FederatesWith {
-		deleteFederatedBundlesQuery := qb.NewDelete().
-			From("bundles").
-			Where("trust_domain", qb.Equals(ftd)).
-			Where("federated_entry_id", qb.Equals(re.EntryId))
-
 		b.Entries = append(b.Entries, gocql.BatchEntry{
-			Stmt:       deleteFederatedBundlesQuery.ToCQL(),
-			Args:       deleteFederatedBundlesQuery.QueryValues(),
+			Stmt:       deleteFederatedBundlesQuery,
+			Args:       []any{ftd, re.EntryId},
 			Idempotent: true,
 		})
 	}
@@ -429,10 +411,7 @@ func (p *Plugin) deleteRegistrationEntry(ctx context.Context, re *datastorev1.Re
 	return nil
 }
 
-func (p *Plugin) FetchRegistrationEntry(
-	ctx context.Context,
-	req *datastorev1.FetchRegistrationEntryRequest,
-) (*datastorev1.FetchRegistrationEntryResponse, error) {
+func (p *Plugin) FetchRegistrationEntry(ctx context.Context, req *datastorev1.FetchRegistrationEntryRequest) (*datastorev1.FetchRegistrationEntryResponse, error) {
 	entries, err := p.fetchRegistrationEntries(ctx, []string{req.EntryId})
 	if err != nil {
 		return nil, err
@@ -443,29 +422,29 @@ func (p *Plugin) FetchRegistrationEntry(
 	}, nil
 }
 
-func (p *Plugin) fetchRegistrationEntries(
-	ctx context.Context,
-	entryIDs []string,
-) (map[string]*datastorev1.RegistrationEntry, error) {
-	fetchRegistrationEntriesQuery := qb.NewSelect().
-		From("registered_entries").
-		Column("created_at").
-		Column("updated_at").
-		Column("entry_id").
-		Column("spiffe_id").
-		Column("parent_id").
-		Column("ttl").
-		Column("admin").
-		Column("downstream").
-		Column("expiry").
-		Column("revision_number").
-		Column("store_svid").
-		Column("hint").
-		Column("jwt_svid_ttl").
-		Column("dns_names").
-		Column("federated_trust_domains").
-		Column("selector_type_value_full")
+func (p *Plugin) fetchRegistrationEntries(ctx context.Context, entryIDs []string) (map[string]*datastorev1.RegistrationEntry, error) {
+	fetchRegistrationEntriesQuery := `
+		SELECT
+			created_at,
+			updated_at,
+			entry_id,
+			spiffe_id,
+			parent_id,
+			ttl,
+			admin,
+			downstream,
+			expiry,
+			revision_number,
+			store_svid,
+			hint,
+			jwt_svid_ttl,
+			dns_names,
+			federated_trust_domains,
+			selector_type_value_full
+		FROM registered_entries
+	`
 
+	args := []any{}
 	cleanedEntryIDs := make([]string, 0, len(entryIDs))
 	for _, id := range entryIDs {
 		if len(id) > 0 {
@@ -473,13 +452,15 @@ func (p *Plugin) fetchRegistrationEntries(
 		}
 	}
 	if len(cleanedEntryIDs) > 0 {
-		fetchRegistrationEntriesQuery = fetchRegistrationEntriesQuery.Where("entry_id", qb.In(cleanedEntryIDs...)).AllowFiltering()
+		args = append(args, cleanedEntryIDs)
+		fetchRegistrationEntriesQuery += " WHERE entry_id IN ? ALLOW FILTERING"
 	}
 	// TODO(tjons): I don't think we need to ALLOW FILTERING here because we have an SAI on entry_id
 	// but cassandra is rejecting the query during the statement preparation phase unless we include it.
 	// Investigate further.
 
-	query := p.db.ReadQuery(fetchRegistrationEntriesQuery)
+	query := p.db.session.Query(fetchRegistrationEntriesQuery, args...).Consistency(p.db.cfg.ReadConsistency)
+
 	iter := query.IterContext(ctx)
 	entryMap := make(map[string]*datastorev1.RegistrationEntry, iter.NumRows())
 	scanner := iter.Scanner()
@@ -527,10 +508,7 @@ func (p *Plugin) fetchRegistrationEntries(
 	return entryMap, nil
 }
 
-func (p *Plugin) FetchRegistrationEntries(
-	ctx context.Context,
-	req *datastorev1.FetchRegistrationEntriesRequest,
-) (*datastorev1.FetchRegistrationEntriesResponse, error) {
+func (p *Plugin) FetchRegistrationEntries(ctx context.Context, req *datastorev1.FetchRegistrationEntriesRequest) (*datastorev1.FetchRegistrationEntriesResponse, error) {
 	resp, err := p.fetchRegistrationEntries(ctx, req.EntryIds)
 	if err != nil {
 		return nil, err
@@ -550,10 +528,7 @@ type queryTerm struct {
 	includeExtraColumn bool
 }
 
-func (p *Plugin) ListRegistrationEntries(
-	ctx context.Context,
-	req *datastorev1.ListRegistrationEntriesRequest,
-) (*datastorev1.ListRegistrationEntriesResponse, error) {
+func (p *Plugin) ListRegistrationEntries(ctx context.Context, req *datastorev1.ListRegistrationEntriesRequest) (*datastorev1.ListRegistrationEntriesResponse, error) {
 	if req.Pagination != nil {
 		if req.Pagination.PageSize == 0 {
 			return nil, status.Error(codes.InvalidArgument, "cannot paginate with pagesize = 0")
@@ -571,26 +546,6 @@ func (p *Plugin) ListRegistrationEntries(
 		return nil, status.Error(codes.InvalidArgument, "cannot list by empty selector set")
 	}
 
-	selectBuilder := qb.NewSelect().
-		From("registered_entries").
-		Column("created_at").
-		Column("updated_at").
-		Column("entry_id").
-		Column("spiffe_id").
-		Column("parent_id").
-		Column("ttl").
-		Column("admin").
-		Column("downstream").
-		Column("expiry").
-		Column("revision_number").
-		Column("store_svid").
-		Column("hint").
-		Column("jwt_svid_ttl").
-		Column("dns_names").
-		Column("federated_trust_domains").
-		Column("selector_types").
-		Column("selector_values")
-
 	collapseToPartitionRow := true
 	onlyFiltersStaticCols := true
 	terms := []queryTerm{}
@@ -600,8 +555,6 @@ func (p *Plugin) ListRegistrationEntries(
 			operator: "=",
 			values:   []any{req.ByParentId},
 		})
-
-		selectBuilder.Where("parent_id", qb.Equals(req.ByParentId))
 	}
 
 	if len(req.BySpiffeId) > 0 {
@@ -610,8 +563,6 @@ func (p *Plugin) ListRegistrationEntries(
 			operator: "=",
 			values:   []any{req.BySpiffeId},
 		})
-
-		selectBuilder.Where("spiffe_id", qb.Equals(req.BySpiffeId))
 	}
 
 	if req.FilterByDownstream {
@@ -620,8 +571,6 @@ func (p *Plugin) ListRegistrationEntries(
 			operator: "=",
 			values:   []any{req.DownstreamValue},
 		})
-
-		selectBuilder.Where("downstream", qb.Equals(req.DownstreamValue))
 	}
 
 	if len(req.ByHint) > 0 {
@@ -630,7 +579,6 @@ func (p *Plugin) ListRegistrationEntries(
 			operator: "=",
 			values:   []any{req.ByHint},
 		})
-		selectBuilder.Where("hint", qb.Equals(req.ByHint))
 	}
 
 	if req.ByFederatesWith != nil || req.BySelectors != nil {
@@ -841,18 +789,11 @@ func (p *Plugin) ListRegistrationEntries(
 	return r, nil
 }
 
-func (p *Plugin) PruneRegistrationEntries(
-	ctx context.Context,
-	req *datastorev1.PruneRegistrationEntriesRequest,
-) (*datastorev1.PruneRegistrationEntriesResponse, error) {
-	selectPruneQuery := qb.NewSelect().
-		From("registered_entries").
-		Columns([]string{"entry_id", "spiffe_id", "parent_id", "federated_trust_domains"}).
-		Where("expiry", qb.LessThan(req.ExpiresBefore)).
-		Where("expiry", qb.GreaterThan(0)).
-		AllowFiltering()
-
-	query := p.db.ReadQuery(selectPruneQuery).Consistency(p.db.cfg.ReadConsistency)
+func (p *Plugin) PruneRegistrationEntries(ctx context.Context, req *datastorev1.PruneRegistrationEntriesRequest) (*datastorev1.PruneRegistrationEntriesResponse, error) {
+	selectPruneQuery := `
+		SELECT DISTINCT entry_id, spiffe_id, parent_id, federated_trust_domains FROM registered_entries WHERE expiry < ? AND expiry > 0 ALLOW FILTERING
+		`
+	query := p.db.session.Query(selectPruneQuery, req.ExpiresBefore).Consistency(p.db.cfg.ReadConsistency)
 	iter := query.IterContext(ctx)
 
 	type entryToPrune struct {
@@ -877,27 +818,38 @@ func (p *Plugin) PruneRegistrationEntries(
 		return nil, newWrappedCassandraError(err)
 	}
 
+	deletePruneQueryBuilder := strings.Builder{}
+	deletePruneQueryBuilder.WriteString(`DELETE FROM registered_entries WHERE entry_id IN (`)
+
 	delIds := make([]any, len(entries))
 	b := p.db.session.Batch(gocql.LoggedBatch).Consistency(p.db.cfg.WriteConsistency)
 
 	for i := range entries {
-		if len(entries[i].federatedTrustDomains) > 0 {
-			deleteBundlesQuery := qb.NewDelete().
-				From("bundles").
-				Where("federated_entry_id", qb.Equals(entries[i].entryID)).
-				Where("trust_domain", qb.In(entries[i].federatedTrustDomains...))
+		if i > 0 {
+			deletePruneQueryBuilder.WriteString(",")
+		}
+		deletePruneQueryBuilder.WriteString("?")
 
-			b.Query(deleteBundlesQuery.ToCQL(), deleteBundlesQuery.QueryValues()...)
+		if len(entries[i].federatedTrustDomains) > 0 {
+			deleteBundlesArgs := make([]any, 0)
+			deleteBundlesQueryBuilder := strings.Builder{}
+			deleteBundlesQueryBuilder.WriteString(`DELETE FROM bundles WHERE trust_domain IN (`)
+			for _, td := range entries[i].federatedTrustDomains {
+				deleteBundlesQueryBuilder.WriteString("?,")
+				deleteBundlesArgs = append(deleteBundlesArgs, td)
+			}
+			deleteBundlesQueryBuilder.WriteString(")")
+			deleteBundlesQueryBuilder.WriteString(" AND federated_entry_id = ?")
+			deleteBundlesArgs = append(deleteBundlesArgs, entries[i].entryID)
+
+			b.Query(deleteBundlesQueryBuilder.String(), deleteBundlesArgs...)
 		}
 
 		delIds[i] = entries[i].entryID
 	}
+	deletePruneQueryBuilder.WriteString(")")
 
-	deletePruneQuery := qb.NewDelete().
-		From("registered_entries").
-		Where("entry_id", qb.In(delIds...))
-
-	b.Query(deletePruneQuery.ToCQL(), deletePruneQuery.QueryValues()...)
+	b.Query(deletePruneQueryBuilder.String(), delIds...)
 
 	if err := b.ExecContext(ctx); err != nil {
 		return nil, newWrappedCassandraError(err)
@@ -907,9 +859,7 @@ func (p *Plugin) PruneRegistrationEntries(
 		if err := p.createRegistrationEntryEvent(ctx, &datastorev1.RegistrationEntryEvent{
 			EntryId: entry.entryID,
 		}); err != nil {
-			p.log.WithError(err).
-				WithField(telemetry.RegistrationID, entry.entryID).
-				Error("Failed to create registration entry event for pruned entry")
+			p.log.WithError(err).WithField(telemetry.RegistrationID, entry.entryID).Error("Failed to create registration entry event for pruned entry")
 		}
 
 		p.log.WithFields(logrus.Fields{
@@ -922,10 +872,7 @@ func (p *Plugin) PruneRegistrationEntries(
 	return &datastorev1.PruneRegistrationEntriesResponse{}, nil
 }
 
-func (p *Plugin) UpdateRegistrationEntry(
-	ctx context.Context,
-	req *datastorev1.UpdateRegistrationEntryRequest,
-) (*datastorev1.UpdateRegistrationEntryResponse, error) {
+func (p *Plugin) UpdateRegistrationEntry(ctx context.Context, req *datastorev1.UpdateRegistrationEntryRequest) (*datastorev1.UpdateRegistrationEntryResponse, error) {
 	if req.GetEntry() == nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid request: missing registration entry")
 	}
@@ -999,10 +946,7 @@ func (p *Plugin) UpdateRegistrationEntry(
 			case typ == "":
 				typ = s.Type
 			case typ != s.Type:
-				return nil, status.Error(
-					codes.InvalidArgument,
-					newValidationError("invalid registration entry: selector types must be the same when store SVID is enabled").Error(),
-				)
+				return nil, status.Error(codes.InvalidArgument, newValidationError("invalid registration entry: selector types must be the same when store SVID is enabled").Error())
 			}
 		}
 	}

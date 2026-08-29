@@ -9,7 +9,6 @@ import (
 	datastorev1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/server/datastore/v1alpha1"
 	"github.com/spiffe/spire/pkg/common/telemetry"
 	"github.com/spiffe/spire/proto/private/server/journal"
-	"github.com/tjons/cassandra-toolbox/qb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -22,13 +21,9 @@ type CAJournal struct {
 }
 
 func (p *Plugin) nextCAJournalID(ctx context.Context) (uint, error) {
-	createQ := qb.NewSelect().
-		Column("MAX(id)").
-		From("ca_journals").
-		AllowFiltering()
-
+	createQ := `SELECT MAX(id) FROM ca_journals ALLOW FILTERING`
 	var maxID uint
-	if err := p.db.ReadQuery(createQ).ScanContext(ctx, &maxID); err != nil {
+	if err := p.db.session.Query(createQ).Consistency(p.db.cfg.WriteConsistency).ScanContext(ctx, &maxID); err != nil {
 		return 0, err
 	}
 	return maxID + 1, nil
@@ -60,16 +55,18 @@ func (p *Plugin) SetCAJournal(ctx context.Context, req *datastorev1.SetCAJournal
 }
 
 func (p *Plugin) updateCAJournal(ctx context.Context, caJournal *datastorev1.CAJournal) (*datastorev1.CAJournal, error) {
-	updateQuery := qb.NewUpdate().
-		Table("ca_journals").
-		Set("active_x509_authority_id", caJournal.GetActiveX509AuthorityId()).
-		Set("data", caJournal.GetData()).
-		Set("updated_at", qb.Literal("toTimestamp(now())")).
-		Where("id", qb.Equals(caJournal.GetId())).
-		IfExists()
+	updateQ := `UPDATE ca_journals SET
+		active_x509_authority_id = ?,
+		data = ?,
+		updated_at = toTimestamp(now())
+		WHERE id = ? IF EXISTS`
 
 	res := make(map[string]any)
-	applied, err := p.db.WriteQuery(updateQuery).MapScanCAS(res)
+	applied, err := p.db.session.Query(updateQ,
+		caJournal.GetActiveX509AuthorityId(),
+		caJournal.GetData(),
+		caJournal.GetId(),
+	).Consistency(p.db.cfg.WriteConsistency).MapScanCAS(res)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to update CA journal: %v", err)
 	}
@@ -87,18 +84,19 @@ func (p *Plugin) createCAJournal(ctx context.Context, caJournal *datastorev1.CAJ
 		return nil, status.Errorf(codes.Internal, "failed to get next CA journal ID: %v", err)
 	}
 
-	createQuery := qb.NewInsert().
-		Into("ca_journals").
-		Columns("id", "active_x509_authority_id", "data", "created_at", "updated_at").
-		Values(
-			nextId,
-			caJournal.GetActiveX509AuthorityId(),
-			caJournal.GetData(),
-			qb.Literal("toTimestamp(now())"),
-			qb.Literal("toTimestamp(now())"),
-		).IfNotExists()
+	createQ := `INSERT INTO ca_journals (
+		id,
+		active_x509_authority_id,
+		data,
+		created_at,
+		updated_at
+	) VALUES (?, ?, ?, toTimestamp(now()), toTimestamp(now())) IF NOT EXISTS`
 
-	if err := p.db.WriteQuery(createQuery).ExecContext(ctx); err != nil {
+	if err := p.db.session.Query(createQ,
+		nextId,
+		caJournal.GetActiveX509AuthorityId(),
+		caJournal.GetData(),
+	).Consistency(p.db.cfg.WriteConsistency).ExecContext(ctx); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to insert CA journal: %v", err)
 	}
 
@@ -108,15 +106,15 @@ func (p *Plugin) createCAJournal(ctx context.Context, caJournal *datastorev1.CAJ
 }
 
 func (p *Plugin) fetchCAJournalByID(ctx context.Context, id uint64) (*datastorev1.CAJournal, error) {
-	fetchQuery := qb.NewSelect().
-		Column("id").
-		Column("active_x509_authority_id").
-		Column("data").
-		From("ca_journals").
-		Where("id", qb.Equals(id))
+	findQ := `SELECT
+		id,
+		active_x509_authority_id,
+		data
+		FROM ca_journals
+		WHERE id = ?`
 
 	var caJournal datastorev1.CAJournal
-	if err := p.db.ReadQuery(fetchQuery).ScanContext(
+	if err := p.db.session.Query(findQ, id).Consistency(p.db.cfg.ReadConsistency).ScanContext(
 		ctx,
 		&caJournal.Id,
 		&caJournal.ActiveX509AuthorityId,
@@ -129,16 +127,15 @@ func (p *Plugin) fetchCAJournalByID(ctx context.Context, id uint64) (*datastorev
 }
 
 func (p *Plugin) fetchCAJournalByActiveX509AuthorityID(ctx context.Context, activeX509AuthorityID string) (*datastorev1.CAJournal, error) {
-	fetchQuery := qb.NewSelect().
-		Column("id").
-		Column("active_x509_authority_id").
-		Column("data").
-		From("ca_journals").
-		Where("active_x509_authority_id", qb.Equals(activeX509AuthorityID)).
-		Limit(1)
+	findQ := `SELECT
+		id,
+		active_x509_authority_id,
+		data
+		FROM ca_journals
+		WHERE active_x509_authority_id = ? LIMIT 1`
 
 	var caJournal datastorev1.CAJournal
-	if err := p.db.ReadQuery(fetchQuery).ScanContext(
+	if err := p.db.session.Query(findQ, activeX509AuthorityID).Consistency(p.db.cfg.ReadConsistency).ScanContext(
 		ctx,
 		&caJournal.Id,
 		&caJournal.ActiveX509AuthorityId,
@@ -206,12 +203,9 @@ checkAuthorities:
 }
 
 func (p *Plugin) deleteCAJournal(ctx context.Context, id uint64) error {
-	deleteQuery := qb.NewDelete().
-		From("ca_journals").
-		Where("id", qb.Equals(id)).
-		IfExists()
+	deleteQ := `DELETE FROM ca_journals WHERE id = ? IF EXISTS`
 
-	if err := p.db.WriteQuery(deleteQuery).ExecContext(ctx); err != nil {
+	if err := p.db.session.Query(deleteQ, id).Consistency(p.db.cfg.WriteConsistency).ExecContext(ctx); err != nil {
 		return status.Errorf(codes.Internal, "failed to delete CA journal: %v", err)
 	}
 
@@ -230,14 +224,14 @@ func (p *Plugin) ListCAJournals(ctx context.Context, req *datastorev1.ListCAJour
 }
 
 func (p *Plugin) listCAJournals(ctx context.Context) ([]*datastorev1.CAJournal, error) {
-	listQuery := qb.NewSelect().
-		Column("id").
-		Column("active_x509_authority_id").
-		Column("data").
-		From("ca_journals")
+	listQ := `SELECT
+		id,
+		active_x509_authority_id,
+		data
+		FROM ca_journals`
 
 	var caJournals []*datastorev1.CAJournal
-	scanner := p.db.ReadQuery(listQuery).IterContext(ctx).Scanner()
+	scanner := p.db.session.Query(listQ).Consistency(p.db.cfg.ReadConsistency).IterContext(ctx).Scanner()
 	for scanner.Next() {
 		caJournal := new(datastorev1.CAJournal)
 
