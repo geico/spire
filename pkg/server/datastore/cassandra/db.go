@@ -20,9 +20,7 @@ type cassandraDB struct {
 }
 
 func (c *cassandraDB) WriteQuery(wq qb.QueryBuilder) *gocql.Query {
-	stmt, _ := wq.Build()
-
-	query := c.session.Query(stmt, wq.QueryValues()...)
+	query := c.session.Query(wq.ToCQL(), wq.QueryValues()...)
 	query.Consistency(c.cfg.WriteConsistency)
 
 	return query
@@ -57,6 +55,7 @@ func (p *Plugin) openConnection(ctx context.Context, config *runtimeConfiguratio
 		cfg: config,
 		log: p.log,
 	}
+
 	db.session, err = p.createSession(config)
 	if err != nil {
 		return fmt.Errorf("failed to create Cassandra session: %w", err)
@@ -96,7 +95,9 @@ func (p *Plugin) createSession(config *runtimeConfiguration) (*gocql.Session, er
 	}
 
 	if config.TLSConfig.RequireMTLS() {
-		// Verify that the files can be read before attempting to use them for TLS configuration, to fail fast if there are any issues with the provided paths or files.
+		// Verify that the files can be read before attempting to use them
+		// for TLS configuration, to fail fast if there are any issues
+		// with the provided paths or files.
 		clientCert, err := os.ReadFile(config.TLSConfig.ClientCertPath)
 		if err != nil {
 			return nil, fmt.Errorf("unable to read client certificate: %w", err)
@@ -128,7 +129,9 @@ func (p *Plugin) createSession(config *runtimeConfiguration) (*gocql.Session, er
 			CaPath:                 config.TLSConfig.RootCAPath,
 		}
 	} else if config.TLSConfig.RequireTLS() {
-		// Verify that the file can be read before attempting to use it for TLS configuration, to fail fast if there are any issues with the provided path or file.
+		// Verify that the file can be read before attempting to use it
+		// for TLS configuration, to fail fast if there are any issues
+		// with the provided path or file.
 		rootCA, err := os.ReadFile(config.TLSConfig.RootCAPath)
 		if err != nil {
 			return nil, fmt.Errorf("unable to read root CA certificate: %w", err)
