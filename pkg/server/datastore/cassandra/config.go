@@ -125,9 +125,15 @@ type Configuration struct {
 	WriteConsistency string `hcl:"write_consistency"`
 
 	// Used to control the log level of the underlying Cassandra database driver, not the plugin itself.
-	// Acceptable values are "DEBUG", "INFO", "WARN", "ERROR", and "OFF". 
+	// Acceptable values are "DEBUG", "INFO", "WARN", "ERROR", and "OFF".
 	// If not specified, the driver will use its default log level.
 	DriverLogLevel string `hcl:"driver_log_level"`
+
+	// When enabled, logs every CQL query executed against the Cassandra cluster including the statement,
+	// bound values, latency, target host, row count, and any errors. Successful queries are logged at
+	// DEBUG level and failed queries at ERROR level. This generates significant log volume and should
+	// only be enabled for debugging purposes.
+	EnableQueryObserver bool `hcl:"enable_query_observer"`
 }
 
 func validateConsistencyLevel(level string) error {
@@ -166,6 +172,7 @@ type runtimeConfiguration struct {
 	Username                                  string
 	Password                                  string
 	DriverLogLevel                            driverLogLevel
+	EnableQueryObserver                       bool
 	TLSConfig                                 *tlsConfig
 	NumConns                                  int
 }
@@ -198,6 +205,7 @@ func (r *runtimeConfiguration) FromUserConfig(cfg *Configuration) error {
 	r.Username = cfg.Username
 	r.Password = cfg.Password
 	r.DriverLogLevel = driverLogLevel(cfg.DriverLogLevel) // TODO(tjons): validate that this is a correct level
+	r.EnableQueryObserver = cfg.EnableQueryObserver
 	r.TLSConfig = &tlsConfig{
 		RootCAPath:     cfg.RootCAPath,
 		ClientKeyPath:  cfg.ClientKeyPath,

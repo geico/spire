@@ -20,7 +20,11 @@ type cassandraDB struct {
 }
 
 func (c *cassandraDB) WriteQuery(wq qb.QueryBuilder) *gocql.Query {
-	query := c.session.Query(wq.ToCQL(), wq.QueryValues()...)
+	s := wq.ToCQL()
+
+	c.log.WithField("statement", s).Debug("cassandra: preparing write query")
+
+	query := c.session.Query(s, wq.QueryValues()...)
 	query.Consistency(c.cfg.WriteConsistency)
 
 	return query
@@ -28,6 +32,8 @@ func (c *cassandraDB) WriteQuery(wq qb.QueryBuilder) *gocql.Query {
 
 func (c *cassandraDB) ReadQuery(rq qb.QueryBuilder) *gocql.Query {
 	stmt, _ := rq.Build()
+
+	c.log.WithField("statement", stmt).Debug("cassandra: preparing read query")
 
 	query := c.session.Query(stmt, rq.QueryValues()...)
 	query.Consistency(c.cfg.ReadConsistency)
@@ -83,7 +89,13 @@ func (p *Plugin) createSession(config *runtimeConfiguration) (*gocql.Session, er
 	clusterConfig.WriteTimeout = config.WriteTimeout
 	clusterConfig.Keyspace = config.Keyspace
 	clusterConfig.Consistency = config.ReadConsistency
-	clusterConfig.Logger = &wrappedLogger{logger: p.log, level: config.DriverLogLevel}
+	driverLogger := &wrappedLogger{logger: p.log, level: config.DriverLogLevel}
+	clusterConfig.Logger = driverLogger
+
+	if config.EnableQueryObserver {
+		clusterConfig.QueryObserver = &queryObserver{logger: driverLogger}
+		p.log.Info("Cassandra query observer enabled - all queries will be logged")
+	}
 
 	if config.Username != "" && config.Password != "" {
 		clusterConfig.Authenticator = gocql.PasswordAuthenticator{

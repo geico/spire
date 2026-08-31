@@ -11,6 +11,7 @@ import (
 	"github.com/sirupsen/logrus"
 	datastorev1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/server/datastore/v1alpha1"
 	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
+	spirelog "github.com/spiffe/spire/pkg/common/log"
 )
 
 // PluginName is the name of the Cassandra datastore plugin.
@@ -48,7 +49,9 @@ func NewPlugin() *Plugin {
 
 // TODO(tjons): figure out what to do with this
 func (p *Plugin) SetLogger(log hclog.Logger) {
-	// p.log = log
+	if adapter, ok := log.(*spirelog.HCLogAdapter); ok {
+		p.log = adapter.CreateEntry([]any{"component", "datastore-cassandra"})
+	}
 }
 
 // Name returns the name of the plugin, which is "cassandra".

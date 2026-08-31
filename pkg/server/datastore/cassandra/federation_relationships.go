@@ -40,6 +40,8 @@ func (p *Plugin) CreateFederationRelationship(
 	ctx context.Context,
 	fr *datastorev1.CreateFederationRelationshipRequest,
 ) (*datastorev1.CreateFederationRelationshipResponse, error) {
+	p.log.WithField("trust_domain", fr.GetRelationship().GetTrustDomainId()).Debug("cassandra: CreateFederationRelationship called")
+
 	if err := validateFederationRelationship(fr.Relationship, AllTrueFederationRelationshipMask); err != nil {
 		return nil, err
 	}
@@ -88,6 +90,8 @@ func (p *Plugin) FetchFederationRelationship(
 	ctx context.Context,
 	req *datastorev1.FetchFederationRelationshipRequest,
 ) (*datastorev1.FetchFederationRelationshipResponse, error) {
+	p.log.WithField("trust_domain", req.GetTrustDomainId()).Debug("cassandra: FetchFederationRelationship called")
+
 	if req.GetTrustDomainId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "trust domain is required")
 	}
@@ -134,6 +138,8 @@ func (p *Plugin) ListFederationRelationships(
 	ctx context.Context,
 	req *datastorev1.ListFederationRelationshipsRequest,
 ) (*datastorev1.ListFederationRelationshipsResponse, error) {
+	p.log.Debug("cassandra: ListFederationRelationships called")
+
 	pager := pages.NewQueryPaginator(
 		req.GetPagination() != nil,
 		req.GetPagination().GetPageSize(),
@@ -209,6 +215,8 @@ func (p *Plugin) ListFederationRelationships(
 }
 
 func (p *Plugin) DeleteFederationRelationship(ctx context.Context, req *datastorev1.DeleteFederationRelationshipRequest) (*datastorev1.DeleteFederationRelationshipResponse, error) {
+	p.log.WithField("trust_domain", req.GetTrustDomainId()).Debug("cassandra: DeleteFederationRelationship called")
+
 	if req.GetTrustDomainId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "trust domain is required")
 	}
@@ -239,6 +247,8 @@ func (p *Plugin) UpdateFederationRelationship(
 	ctx context.Context,
 	req *datastorev1.UpdateFederationRelationshipRequest,
 ) (*datastorev1.UpdateFederationRelationshipResponse, error) {
+	p.log.WithField("trust_domain", req.GetRelationship().GetTrustDomainId()).Debug("cassandra: UpdateFederationRelationship called")
+
 	if req == nil || req.GetRelationship() == nil {
 		return nil, status.Error(codes.InvalidArgument, "federation relationship is required")
 	}

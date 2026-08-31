@@ -13,6 +13,8 @@ func (p *Plugin) CreateJoinToken(
 	ctx context.Context,
 	req *datastorev1.CreateJoinTokenRequest,
 ) (*datastorev1.CreateJoinTokenResponse, error) {
+	p.log.Debug("cassandra: CreateJoinToken called")
+
 	if req == nil || req.Token == "" || req.ExpiresAt == 0 {
 		return nil, errors.New("token and expiry are required")
 	}
@@ -41,6 +43,8 @@ func (p *Plugin) DeleteJoinToken(
 	ctx context.Context,
 	req *datastorev1.DeleteJoinTokenRequest,
 ) (*datastorev1.DeleteJoinTokenResponse, error) {
+	p.log.Debug("cassandra: DeleteJoinToken called")
+
 	jt, err := p.FetchJoinToken(ctx, &datastorev1.FetchJoinTokenRequest{Token: req.Token})
 	if err != nil {
 		return nil, err
@@ -62,6 +66,8 @@ func (p *Plugin) FetchJoinToken(
 	ctx context.Context,
 	req *datastorev1.FetchJoinTokenRequest,
 ) (*datastorev1.FetchJoinTokenResponse, error) {
+	p.log.Debug("cassandra: FetchJoinToken called")
+
 	var (
 		jt  string
 		exp int64
@@ -88,6 +94,8 @@ func (p *Plugin) PruneJoinTokens(
 	ctx context.Context,
 	req *datastorev1.PruneJoinTokensRequest,
 ) (*datastorev1.PruneJoinTokensResponse, error) {
+	p.log.WithField("expires_before", req.GetExpiresBefore()).Debug("cassandra: PruneJoinTokens called")
+
 	findExpiredQuery := qb.NewSelect().
 		From("join_tokens").
 		Column("join_token").
