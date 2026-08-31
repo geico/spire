@@ -14,6 +14,8 @@ func (p *Plugin) ListRegistrationEntryEvents(
 	ctx context.Context,
 	req *datastorev1.ListRegistrationEntryEventsRequest,
 ) (*datastorev1.ListRegistrationEntryEventsResponse, error) {
+	p.log.Debug("cassandra: ListRegistrationEntryEvents called")
+
 	listQuery := qb.NewSelect().
 		From("registration_entry_events").
 		Columns([]string{"id", "entry_id"}).

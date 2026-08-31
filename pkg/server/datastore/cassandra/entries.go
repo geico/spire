@@ -20,6 +20,8 @@ import (
 )
 
 func (p *Plugin) CountRegistrationEntries(ctx context.Context, req *datastorev1.CountRegistrationEntriesRequest) (*datastorev1.CountRegistrationEntriesResponse, error) {
+	p.log.Debug("cassandra: CountRegistrationEntries called")
+
 	args := []any{}
 	fields := []string{}
 	operators := []string{}
@@ -97,6 +99,8 @@ func (p *Plugin) CreateRegistrationEntry(
 	ctx context.Context,
 	req *datastorev1.CreateRegistrationEntryRequest,
 ) (*datastorev1.CreateRegistrationEntryResponse, error) {
+	p.log.WithField("spiffe_id", req.GetEntry().GetSpiffeId()).Debug("cassandra: CreateRegistrationEntry called")
+
 	if req.GetEntry() == nil {
 		return nil, newValidationError("invalid request: missing registration entry")
 	}
@@ -158,6 +162,12 @@ func (p *Plugin) createRegistrationEntry(
 		}
 		entryID = uuid.String()
 	}
+
+	p.log.WithFields(logrus.Fields{
+		"entry_id":  entryID,
+		"spiffe_id": entry.SpiffeId,
+		"parent_id": entry.ParentId,
+	}).Debug("cassandra: creating registration entry")
 
 	entry.EntryId = entryID
 	entry.CreatedAt = time.Now().Unix()
@@ -322,6 +332,10 @@ func (p *Plugin) CreateOrReturnRegistrationEntry(
 	ctx context.Context,
 	req *datastorev1.CreateOrReturnRegistrationEntryRequest,
 ) (*datastorev1.CreateOrReturnRegistrationEntryResponse, error) {
+	p.log.WithFields(logrus.Fields{
+		"spiffe_id": req.GetEntry().GetSpiffeId(),
+		"parent_id": req.GetEntry().GetParentId(),
+	}).Debug("cassandra: CreateOrReturnRegistrationEntry called")
 	if err := validateRegistrationEntry(req.Entry); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -371,6 +385,7 @@ func (p *Plugin) DeleteRegistrationEntry(
 	ctx context.Context,
 	req *datastorev1.DeleteRegistrationEntryRequest,
 ) (*datastorev1.DeleteRegistrationEntryResponse, error) {
+	p.log.WithField("entry_id", req.GetEntryId()).Debug("cassandra: DeleteRegistrationEntry called")
 	entries, err := p.fetchRegistrationEntries(ctx, []string{req.EntryId})
 	if err != nil {
 		return nil, newWrappedCassandraError(err)
@@ -433,6 +448,8 @@ func (p *Plugin) FetchRegistrationEntry(
 	ctx context.Context,
 	req *datastorev1.FetchRegistrationEntryRequest,
 ) (*datastorev1.FetchRegistrationEntryResponse, error) {
+	p.log.WithField("entry_id", req.GetEntryId()).Debug("cassandra: FetchRegistrationEntry called")
+
 	entries, err := p.fetchRegistrationEntries(ctx, []string{req.EntryId})
 	if err != nil {
 		return nil, err
@@ -447,6 +464,7 @@ func (p *Plugin) fetchRegistrationEntries(
 	ctx context.Context,
 	entryIDs []string,
 ) (map[string]*datastorev1.RegistrationEntry, error) {
+	p.log.WithField("entry_ids", entryIDs).Debug("cassandra: fetchRegistrationEntries called")
 	fetchRegistrationEntriesQuery := qb.NewSelect().
 		From("registered_entries").
 		Column("created_at").
@@ -531,6 +549,8 @@ func (p *Plugin) FetchRegistrationEntries(
 	ctx context.Context,
 	req *datastorev1.FetchRegistrationEntriesRequest,
 ) (*datastorev1.FetchRegistrationEntriesResponse, error) {
+	p.log.WithField("entry_ids_count", len(req.GetEntryIds())).Debug("cassandra: FetchRegistrationEntries called")
+
 	resp, err := p.fetchRegistrationEntries(ctx, req.EntryIds)
 	if err != nil {
 		return nil, err
@@ -554,6 +574,12 @@ func (p *Plugin) ListRegistrationEntries(
 	ctx context.Context,
 	req *datastorev1.ListRegistrationEntriesRequest,
 ) (*datastorev1.ListRegistrationEntriesResponse, error) {
+	p.log.WithFields(logrus.Fields{
+		"by_parent_id":   req.GetByParentId(),
+		"by_spiffe_id":   req.GetBySpiffeId(),
+		"has_pagination": req.Pagination != nil,
+	}).Debug("cassandra: ListRegistrationEntries called")
+
 	if req.Pagination != nil {
 		if req.Pagination.PageSize == 0 {
 			return nil, status.Error(codes.InvalidArgument, "cannot paginate with pagesize = 0")
@@ -731,6 +757,7 @@ func (p *Plugin) ListRegistrationEntries(
 	}
 
 	cqlQuery := p.db.session.Query(query, args...).Consistency(p.db.cfg.ReadConsistency)
+	p.log.WithField("query", query).Debug("cassandra: ListRegistrationEntries executing query")
 
 	if req.Pagination != nil {
 		cqlQuery.PageSize(int(req.Pagination.PageSize))
@@ -814,6 +841,7 @@ func (p *Plugin) ListRegistrationEntries(
 		return nil, newWrappedCassandraError(err)
 	}
 	pageState := iter.PageState()
+	p.log.WithField("result_count", len(entryMap)).Debug("cassandra: ListRegistrationEntries scan complete")
 
 	r := &datastorev1.ListRegistrationEntriesResponse{
 		Entries: slices.Collect(maps.Values(entryMap)),
@@ -845,6 +873,8 @@ func (p *Plugin) PruneRegistrationEntries(
 	ctx context.Context,
 	req *datastorev1.PruneRegistrationEntriesRequest,
 ) (*datastorev1.PruneRegistrationEntriesResponse, error) {
+	p.log.WithField("expires_before", req.GetExpiresBefore()).Debug("cassandra: PruneRegistrationEntries called")
+
 	selectPruneQuery := qb.NewSelect().
 		From("registered_entries").
 		Columns([]string{"entry_id", "spiffe_id", "parent_id", "federated_trust_domains"}).
@@ -926,6 +956,8 @@ func (p *Plugin) UpdateRegistrationEntry(
 	ctx context.Context,
 	req *datastorev1.UpdateRegistrationEntryRequest,
 ) (*datastorev1.UpdateRegistrationEntryResponse, error) {
+	p.log.WithField("entry_id", req.GetEntry().GetEntryId()).Debug("cassandra: UpdateRegistrationEntry called")
+
 	if req.GetEntry() == nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid request: missing registration entry")
 	}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	"github.com/sirupsen/logrus"
 	datastorev1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/server/datastore/v1alpha1"
 	"github.com/tjons/cassandra-toolbox/pages"
 	"github.com/tjons/cassandra-toolbox/qb"
@@ -16,6 +17,8 @@ import (
 )
 
 func (p *Plugin) CountAttestedNodes(ctx context.Context, req *datastorev1.CountAttestedNodesRequest) (*datastorev1.CountAttestedNodesResponse, error) {
+	p.log.Debug("cassandra: CountAttestedNodes called")
+
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
@@ -69,6 +72,8 @@ func (p *Plugin) CountAttestedNodes(ctx context.Context, req *datastorev1.CountA
 }
 
 func (p *Plugin) CreateAttestedNode(ctx context.Context, req *datastorev1.CreateAttestedNodeRequest) (*datastorev1.CreateAttestedNodeResponse, error) {
+	p.log.WithField("spiffe_id", req.GetNode().GetSpiffeId()).Debug("cassandra: CreateAttestedNode called")
+
 	if req == nil || req.Node == nil {
 		return nil, newCassandraError("invalid request: missing attested node")
 	}
@@ -144,6 +149,8 @@ func (p *Plugin) createAttestedNode(ctx context.Context, model *datastorev1.Atte
 }
 
 func (p *Plugin) DeleteAttestedNode(ctx context.Context, req *datastorev1.DeleteAttestedNodeRequest) (*datastorev1.DeleteAttestedNodeResponse, error) {
+	p.log.WithField("spiffe_id", req.GetSpiffeId()).Debug("cassandra: DeleteAttestedNode called")
+
 	if req == nil || req.SpiffeId == "" {
 		return nil, status.Error(codes.InvalidArgument, "spiffe id is required")
 	}
@@ -178,6 +185,8 @@ func (p *Plugin) DeleteAttestedNode(ctx context.Context, req *datastorev1.Delete
 }
 
 func (p *Plugin) FetchAttestedNode(ctx context.Context, req *datastorev1.FetchAttestedNodeRequest) (*datastorev1.FetchAttestedNodeResponse, error) {
+	p.log.WithField("spiffe_id", req.GetSpiffeId()).Debug("cassandra: FetchAttestedNode called")
+
 	if req == nil || req.SpiffeId == "" {
 		return nil, status.Error(codes.InvalidArgument, "spiffe id is required")
 	}
@@ -224,6 +233,12 @@ func (p *Plugin) FetchAttestedNode(ctx context.Context, req *datastorev1.FetchAt
 }
 
 func (p *Plugin) ListAttestedNodes(ctx context.Context, req *datastorev1.ListAttestedNodesRequest) (*datastorev1.ListAttestedNodesResponse, error) {
+	p.log.WithFields(logrus.Fields{
+		"by_attestation_type": req.GetByAttestationType(),
+		"by_banned":           req.GetByBanned(),
+		"fetch_selectors":     req.GetFetchSelectors(),
+		"has_pagination":      req.GetPagination() != nil,
+	}).Debug("cassandra: ListAttestedNodes called")
 	pager := pages.NewQueryPaginator(req.GetPagination() != nil, req.GetPagination().GetPageSize(), req.GetPagination().GetPageToken())
 
 	if req.BySelectors != nil && len(req.BySelectors.Selectors) == 0 {
@@ -337,6 +352,8 @@ func (p *Plugin) ListAttestedNodes(ctx context.Context, req *datastorev1.ListAtt
 		return nil, newWrappedCassandraError(err)
 	}
 
+	p.log.WithField("result_count", len(attestedNodes)).Debug("cassandra: ListAttestedNodes scan complete")
+
 	pager.NextPageToken()
 
 	resp := &datastorev1.ListAttestedNodesResponse{
@@ -381,6 +398,8 @@ var AllTrueAgentMask = &datastorev1.AttestedNodeMask{
 }
 
 func (p *Plugin) UpdateAttestedNode(ctx context.Context, req *datastorev1.UpdateAttestedNodeRequest) (*datastorev1.UpdateAttestedNodeResponse, error) {
+	p.log.WithField("spiffe_id", req.GetNode().GetSpiffeId()).Debug("cassandra: UpdateAttestedNode called")
+
 	if req == nil || req.Node == nil {
 		return nil, newCassandraError("invalid request: missing attested node")
 	}
@@ -472,6 +491,8 @@ func (p *Plugin) PruneAttestedExpiredNodes(
 	ctx context.Context,
 	req *datastorev1.PruneAttestedExpiredNodesRequest,
 ) (*datastorev1.PruneAttestedExpiredNodesResponse, error) {
+	p.log.WithField("expires_before", req.GetExpiresBefore()).Debug("cassandra: PruneAttestedExpiredNodes called")
+
 	if req == nil || req.ExpiresBefore == 0 {
 		return nil, newCassandraError("invalid request: missing expired_before timestamp")
 	}

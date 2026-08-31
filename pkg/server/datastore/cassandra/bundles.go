@@ -19,6 +19,8 @@ import (
 )
 
 func (p *Plugin) AppendBundle(ctx context.Context, req *datastorev1.AppendBundleRequest) (*datastorev1.AppendBundleResponse, error) {
+	p.log.WithField("trust_domain", req.GetBundle().GetTrustDomainId()).Debug("cassandra: AppendBundle called")
+
 	if req == nil || req.Bundle == nil {
 		return nil, errors.New("missing bundle in request")
 	}
@@ -77,6 +79,7 @@ func (p *Plugin) AppendBundle(ctx context.Context, req *datastorev1.AppendBundle
 }
 
 func (p *Plugin) CountBundles(ctx context.Context, _ *datastorev1.CountBundlesRequest) (*datastorev1.CountBundlesResponse, error) {
+	p.log.Debug("cassandra: CountBundles called")
 	countQuery := qb.NewSelect().
 		Column("COUNT(*)").
 		From("bundles")
@@ -95,6 +98,7 @@ func (p *Plugin) CountBundles(ctx context.Context, _ *datastorev1.CountBundlesRe
 }
 
 func (p *Plugin) CreateBundle(ctx context.Context, req *datastorev1.CreateBundleRequest) (*datastorev1.CreateBundleResponse, error) {
+	p.log.WithField("trust_domain", req.GetBundle().GetTrustDomainId()).Debug("cassandra: CreateBundle called")
 	if req.GetBundle() == nil {
 		return nil, errors.New("missing bundle in request")
 	}
@@ -118,6 +122,8 @@ func (p *Plugin) CreateBundle(ctx context.Context, req *datastorev1.CreateBundle
 }
 
 func (p *Plugin) DeleteBundle(ctx context.Context, req *datastorev1.DeleteBundleRequest) (*datastorev1.DeleteBundleResponse, error) {
+	p.log.WithField("trust_domain", req.GetTrustDomain()).Debug("cassandra: DeleteBundle called")
+
 	if req.GetTrustDomain() == "" {
 		return nil, errors.New("missing trust domain in request")
 	}
@@ -260,6 +266,8 @@ func (p *Plugin) findFederatedBundleEntries(ctx context.Context, trustDomain str
 }
 
 func (p *Plugin) FetchBundle(ctx context.Context, req *datastorev1.FetchBundleRequest) (*datastorev1.FetchBundleResponse, error) {
+	p.log.WithField("trust_domain", req.GetTrustDomain()).Debug("cassandra: FetchBundle called")
+
 	bundle, err := p.fetchBundle(ctx, req.GetTrustDomain())
 	if err != nil {
 		return nil, err
@@ -319,6 +327,8 @@ func dataToBundle(data []byte) (*common.Bundle, error) {
 }
 
 func (p *Plugin) ListBundles(ctx context.Context, req *datastorev1.ListBundlesRequest) (*datastorev1.ListBundlesResponse, error) {
+	p.log.Debug("cassandra: ListBundles called")
+
 	pager := pages.NewQueryPaginator(req.GetPagination() != nil, req.GetPagination().GetPageSize(), req.GetPagination().GetPageToken())
 	if err := pager.Validate(); err != nil {
 		return nil, err
@@ -360,6 +370,7 @@ func (p *Plugin) ListBundles(ctx context.Context, req *datastorev1.ListBundlesRe
 }
 
 func (p *Plugin) PruneBundle(ctx context.Context, req *datastorev1.PruneBundleRequest) (*datastorev1.PruneBundleResponse, error) {
+	p.log.WithField("trust_domain", req.GetTrustDomain()).Debug("cassandra: PruneBundle called")
 	if req == nil || req.GetTrustDomain() == "" {
 		return nil, errors.New("missing trust domain ID in request")
 	}
@@ -420,6 +431,8 @@ func (p *Plugin) bundleExistsForTrustDomain(ctx context.Context, trustDomainID s
 }
 
 func (p *Plugin) SetBundle(ctx context.Context, req *datastorev1.SetBundleRequest) (*datastorev1.SetBundleResponse, error) {
+	p.log.WithField("trust_domain", req.GetBundle().GetTrustDomainId()).Debug("cassandra: SetBundle called")
+
 	if req == nil || req.Bundle == nil {
 		return nil, errors.New("missing bundle in request")
 	}
@@ -598,6 +611,8 @@ func applyBundleMask(model *datastorev1.Bundle, newBundle *common.Bundle, inputM
 }
 
 func (p *Plugin) UpdateBundle(ctx context.Context, req *datastorev1.UpdateBundleRequest) (*datastorev1.UpdateBundleResponse, error) {
+	p.log.WithField("trust_domain", req.GetBundle().GetTrustDomainId()).Debug("cassandra: UpdateBundle called")
+
 	return p.updateBundle(ctx, req)
 }
 
