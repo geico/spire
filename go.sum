@@ -765,6 +765,8 @@ github.com/tink-crypto/tink-go/v2 v2.7.0 h1:k7QnUXJ1cRDpvoy/5l1FimZqMAArRff8vjUq
 github.com/tink-crypto/tink-go/v2 v2.7.0/go.mod h1:cWNpQ/yAT/QHzAV0kBGMOSJzzYTKofDZdJaUqOPPWCI=
 github.com/tjons/cassandra-toolbox v0.1.1 h1:80rAQYjyGlnLUl778L3zn1gNOYeJspsX3V6qfJv8P4E=
 github.com/tjons/cassandra-toolbox v0.1.1/go.mod h1:viuoJtgZkNSCMVu9Edb4J67+EGIsmAyXDI7Gn09CVMU=
+github.com/tjons/cassandra-toolbox v0.1.2 h1:42WapqGe27t6gtZlOaSlL+notZqpb0vzjJUqdGmOdjM=
+github.com/tjons/cassandra-toolbox v0.1.2/go.mod h1:viuoJtgZkNSCMVu9Edb4J67+EGIsmAyXDI7Gn09CVMU=
 github.com/tklauser/go-sysconf v0.3.16 h1:frioLaCQSsF5Cy1jgRBrzr6t502KIIwQ0MArYICU0nA=
 github.com/tklauser/go-sysconf v0.3.16/go.mod h1:/qNL9xxDhc7tx3HSRsLWNnuzbVfh3e7gh/BmM179nYI=
 github.com/tklauser/numcpus v0.11.0 h1:nSTwhKH5e1dMNsCdVBukSZrURJRoHbSEQjdEbY+9RXw=
