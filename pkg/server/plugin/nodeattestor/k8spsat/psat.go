@@ -65,6 +65,9 @@ type ClusterConfig struct {
 
 	// Pod labels that are allowed to use as selectors
 	AllowedPodLabelKeys []string `hcl:"allowed_pod_label_keys"`
+
+	// UsePodUIDForAgentID uses the pod UID instead of the node UID in generated agent SPIFFE IDs.
+	UsePodUIDForAgentID bool `hcl:"use_pod_uid_for_agent_id"`
 }
 
 type attestorConfig struct {
@@ -78,6 +81,7 @@ type clusterConfig struct {
 	client               apiserver.Client
 	allowedNodeLabelKeys map[string]bool
 	allowedPodLabelKeys  map[string]bool
+	usePodUIDForAgentID  bool
 }
 
 func buildConfig(coreConfig catalog.CoreConfig, hclText string, status *pluginconf.Status) *attestorConfig {
@@ -129,6 +133,7 @@ func buildConfig(coreConfig catalog.CoreConfig, hclText string, status *pluginco
 			client:               apiserver.New(hclCluster.KubeConfigFile),
 			allowedNodeLabelKeys: allowedNodeLabelKeys,
 			allowedPodLabelKeys:  allowedPodLabelKeys,
+			usePodUIDForAgentID:  hclCluster.UsePodUIDForAgentID,
 		}
 	}
 
@@ -202,7 +207,7 @@ func (p *AttestorPlugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer)
 
 	namespace, serviceAccountName, err := k8s.GetNamesFromTokenStatus(tokenStatus)
 	if err != nil {
-		return status.Errorf(codes.Internal, "fail to parse username from token review status for cluster %q: %v", attestationData.Cluster, err)
+		return status.Errorf(codes.Internal, "failed to parse username from token review status for cluster %q: %v", attestationData.Cluster, err)
 	}
 	fullServiceAccountName := fmt.Sprintf("%v:%v", namespace, serviceAccountName)
 
@@ -212,22 +217,25 @@ func (p *AttestorPlugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer)
 
 	podName, err := k8s.GetPodNameFromTokenStatus(tokenStatus)
 	if err != nil {
-		return status.Errorf(codes.Internal, "fail to get pod name from token review status for cluster %q: %v", attestationData.Cluster, err)
+		return status.Errorf(codes.Internal, "failed to get pod name from token review status for cluster %q: %v", attestationData.Cluster, err)
 	}
 
 	podUID, err := k8s.GetPodUIDFromTokenStatus(tokenStatus)
 	if err != nil {
-		return status.Errorf(codes.Internal, "fail to get pod UID from token review status for cluster %q: %v", attestationData.Cluster, err)
+		return status.Errorf(codes.Internal, "failed to get pod UID from token review status for cluster %q: %v", attestationData.Cluster, err)
 	}
 
 	pod, err := cluster.client.GetPod(stream.Context(), namespace, podName)
 	if err != nil {
-		return status.Errorf(codes.Internal, "fail to get pod from k8s API server for cluster %q: %v", attestationData.Cluster, err)
+		return status.Errorf(codes.Internal, "failed to get pod from k8s API server for cluster %q: %v", attestationData.Cluster, err)
+	}
+	if string(pod.UID) != podUID {
+		return status.Errorf(codes.PermissionDenied, "pod UID mismatch for pod %q in cluster %q: token bound to pod UID %q", podName, attestationData.Cluster, podUID)
 	}
 
 	node, err := cluster.client.GetNode(stream.Context(), pod.Spec.NodeName)
 	if err != nil {
-		return status.Errorf(codes.Internal, "fail to get node from k8s API server for cluster %q: %v", attestationData.Cluster, err)
+		return status.Errorf(codes.Internal, "failed to get node from k8s API server for cluster %q: %v", attestationData.Cluster, err)
 	}
 
 	nodeUID := string(node.UID)
@@ -258,11 +266,16 @@ func (p *AttestorPlugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer)
 		}
 	}
 
+	agentIDSuffix := nodeUID
+	if cluster.usePodUIDForAgentID {
+		agentIDSuffix = "pod/" + podUID
+	}
+
 	return stream.Send(&nodeattestorv1.AttestResponse{
 		Response: &nodeattestorv1.AttestResponse_AgentAttributes{
 			AgentAttributes: &nodeattestorv1.AgentAttributes{
 				CanReattest:    true,
-				SpiffeId:       k8s.AgentID(pluginName, config.trustDomain, attestationData.Cluster, nodeUID),
+				SpiffeId:       k8s.AgentID(pluginName, config.trustDomain, attestationData.Cluster, agentIDSuffix),
 				SelectorValues: selectorValues,
 			},
 		},

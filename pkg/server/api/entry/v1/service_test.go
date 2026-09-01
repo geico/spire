@@ -17,6 +17,7 @@ import (
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	entryv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/entry/v1"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
+	commonapi "github.com/spiffe/spire/pkg/common/api"
 	"github.com/spiffe/spire/pkg/common/telemetry"
 	"github.com/spiffe/spire/pkg/server/api"
 	"github.com/spiffe/spire/pkg/server/api/entry/v1"
@@ -4085,6 +4086,97 @@ func TestBatchUpdateEntry(t *testing.T) {
 			},
 		},
 		{
+			name:           "Success Update AdditionalAttributes",
+			initialEntries: []*types.Entry{initialEntry},
+			inputMask: &types.EntryMask{
+				AdditionalAttributes: true,
+			},
+			outputMask: &types.EntryMask{
+				AdditionalAttributes: true,
+			},
+			updateEntries: []*types.Entry{
+				{
+					AdditionalAttributes: &types.Entry_AdditionalAttributes{
+						JwtSvidIncludeJti: true,
+					},
+				},
+			},
+			expectDsEntries: func(id string) []*types.Entry {
+				modifiedEntry := proto.Clone(initialEntry).(*types.Entry)
+				modifiedEntry.Id = id
+				modifiedEntry.AdditionalAttributes = &types.Entry_AdditionalAttributes{
+					JwtSvidIncludeJti: true,
+				}
+				modifiedEntry.RevisionNumber = 1
+				return []*types.Entry{modifiedEntry}
+			},
+			expectResults: []*entryv1.BatchUpdateEntryResponse_Result{
+				{
+					Status: &types.Status{Code: int32(codes.OK), Message: "OK"},
+					Entry: &types.Entry{
+						AdditionalAttributes: &types.Entry_AdditionalAttributes{
+							JwtSvidIncludeJti: true,
+						},
+					},
+				},
+			},
+			expectLogs: func(m map[string]string) []spiretest.LogEntry {
+				return []spiretest.LogEntry{
+					{
+						Level:   logrus.InfoLevel,
+						Message: "API accessed",
+						Data: logrus.Fields{
+							telemetry.Status:         "success",
+							telemetry.Type:           "audit",
+							telemetry.RegistrationID: m[entry1SpiffeID.Path],
+						},
+					},
+				}
+			},
+		},
+		{
+			name:           "Success Don't Update AdditionalAttributes",
+			initialEntries: []*types.Entry{initialEntry},
+			inputMask:      &types.EntryMask{
+				// With AdditionalAttributes false, the update should be a no-op for that field
+			},
+			outputMask: &types.EntryMask{
+				AdditionalAttributes: true,
+			},
+			updateEntries: []*types.Entry{
+				{
+					AdditionalAttributes: &types.Entry_AdditionalAttributes{
+						JwtSvidIncludeJti: true,
+					},
+				},
+			},
+			expectDsEntries: func(m string) []*types.Entry {
+				modifiedEntry := proto.Clone(initialEntry).(*types.Entry)
+				modifiedEntry.Id = m
+				modifiedEntry.RevisionNumber = 1
+				return []*types.Entry{modifiedEntry}
+			},
+			expectResults: []*entryv1.BatchUpdateEntryResponse_Result{
+				{
+					Status: &types.Status{Code: int32(codes.OK), Message: "OK"},
+					Entry:  &types.Entry{},
+				},
+			},
+			expectLogs: func(m map[string]string) []spiretest.LogEntry {
+				return []spiretest.LogEntry{
+					{
+						Level:   logrus.InfoLevel,
+						Message: "API accessed",
+						Data: logrus.Fields{
+							telemetry.Status:         "success",
+							telemetry.Type:           "audit",
+							telemetry.RegistrationID: m[entry1SpiffeID.Path],
+						},
+					},
+				}
+			},
+		},
+		{
 			name:           "Success Don't Update X509SVIDTTL",
 			initialEntries: []*types.Entry{initialEntry},
 			inputMask:      &types.EntryMask{
@@ -4639,7 +4731,7 @@ func TestBatchUpdateEntry(t *testing.T) {
 			spiffeToIDMap := make(map[string]string)
 			updateEntries := tt.updateEntries
 			for i := range createResp.Results {
-				require.Equal(t, api.OK(), createResp.Results[i].Status)
+				require.Equal(t, commonapi.OK(), createResp.Results[i].Status)
 				updateEntries[i].Id = createResp.Results[i].Entry.Id
 				spiffeToIDMap[createResp.Results[i].Entry.SpiffeId.Path] = createResp.Results[i].Entry.Id
 			}

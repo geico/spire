@@ -80,6 +80,10 @@ type Config struct {
 	// If unset, the JWT-SVID will not have an issuer claim.
 	JWTIssuer string
 
+	// WITIssuer is used as the issuer claim in WIT-SVIDs minted by the server.
+	// If unset, the WIT-SVID will not have an issuer claim.
+	WITIssuer string
+
 	// CASubject is the subject used in the CA certificate
 	CASubject pkix.Name
 
@@ -140,6 +144,11 @@ type Config struct {
 	// considered for pruning.
 	PruneNonReattestableNodes bool
 
+	// PruneAttestedNodesBatchSize is the maximum number of expired attested
+	// nodes pruned per cycle. When non-positive, a default is used. Only applies
+	// when PruneAttestedNodesExpiredFor is set.
+	PruneAttestedNodesBatchSize int
+
 	// MaxAttestedNodeInfoStaleness determines how long to trust cached attested
 	// node information, before requiring refreshing it from the datastore.
 	MaxAttestedNodeInfoStaleness time.Duration
@@ -155,7 +164,10 @@ type Config struct {
 	ExperimentalAllowPluggableDatastore bool
 }
 
-type ExperimentalConfig struct{}
+type ExperimentalConfig struct {
+	// AgentSpiffeIdAsSelector, if true, includes the agent spiffe id as a node selector.
+	AgentSpiffeIdAsSelector bool
+}
 
 type FederationConfig struct {
 	// BundleEndpoint contains the federation bundle endpoint configuration.
