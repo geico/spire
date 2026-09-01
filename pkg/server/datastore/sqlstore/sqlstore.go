@@ -885,7 +885,10 @@ func (ds *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest)
 
 	config.DBTypeConfig = dbTypeConfig
 
-	if err := config.Validate(); err != nil {
+	if _, err := ds.Validate(ctx, &configv1.ValidateRequest{
+		HclConfiguration:  req.HclConfiguration,
+		CoreConfiguration: req.CoreConfiguration,
+	}); err != nil {
 		return nil, err
 	}
 

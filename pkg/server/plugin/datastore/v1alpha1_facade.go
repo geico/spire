@@ -517,10 +517,11 @@ func (v1 *V1Alpha1) UpdateAttestedNode(ctx context.Context, node *common.Atteste
 	return fromPluginToServerAttestedNode(resp.GetNode()), nil
 }
 
-func (v1 *V1Alpha1) PruneAttestedExpiredNodes(ctx context.Context, expiredBefore time.Time, includeNonReattestable bool) error {
+func (v1 *V1Alpha1) PruneAttestedExpiredNodes(ctx context.Context, expiredBefore time.Time, includeNonReattestable bool, batchSize int) error {
 	_, err := v1.DataStorePluginClient.PruneAttestedExpiredNodes(ctx, &datastorev1.PruneAttestedExpiredNodesRequest{
 		ExpiresBefore:          int64(expiredBefore.Unix()),
 		IncludeNonReattestable: includeNonReattestable,
+		BatchSize:              int64(batchSize),
 	})
 
 	return v1.WrapErr(err)

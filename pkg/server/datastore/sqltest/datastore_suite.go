@@ -22,6 +22,7 @@ import (
 	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
+	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
 	"github.com/spiffe/spire/pkg/common/bundleutil"
 	"github.com/spiffe/spire/pkg/common/protoutil"
 	"github.com/spiffe/spire/pkg/common/telemetry"
@@ -121,11 +122,13 @@ func (s *Suite) newDataStore() DataStoreUnderTest {
 	case "":
 		s.nextID++
 		dbPath := filepath.ToSlash(filepath.Join(s.dir, fmt.Sprintf("db%d.sqlite3", s.nextID)))
-		err := ds.Configure(ctx, fmt.Sprintf(`
+		_, err := ds.Configure(ctx, &configv1.ConfigureRequest{
+			HclConfiguration: fmt.Sprintf(`
 			database_type = "sqlite3"
 			log_sql = true
 			connection_string = "%s"
-		`, dbPath))
+		`, dbPath),
+		})
 		s.Require().NoError(err)
 
 		// assert that WAL journal mode is enabled
@@ -145,23 +148,27 @@ func (s *Suite) newDataStore() DataStoreUnderTest {
 		s.T().Logf("CONN STRING: %q", s.cfg.ConnString)
 		s.Require().NotEmpty(s.cfg.ConnString, "connection string must be set")
 		wipeMySQL(s.T(), s.cfg.ConnString)
-		err := ds.Configure(ctx, fmt.Sprintf(`
+		_, err := ds.Configure(ctx, &configv1.ConfigureRequest{
+			HclConfiguration: fmt.Sprintf(`
 			database_type = "mysql"
 			log_sql = true
 			connection_string = "%s"
 			ro_connection_string = "%s"
-		`, s.cfg.ConnString, s.cfg.ROConnString))
+		`, s.cfg.ConnString, s.cfg.ROConnString),
+		})
 		s.Require().NoError(err)
 	case "postgres":
 		s.T().Logf("CONN STRING: %q", s.cfg.ConnString)
 		s.Require().NotEmpty(s.cfg.ConnString, "connection string must be set")
 		wipePostgres(s.T(), s.cfg.ConnString)
-		err := ds.Configure(ctx, fmt.Sprintf(`
+		_, err := ds.Configure(ctx, &configv1.ConfigureRequest{
+			HclConfiguration: fmt.Sprintf(`
 			database_type = "postgres"
 			log_sql = true
 			connection_string = "%s"
 			ro_connection_string = "%s"
-		`, s.cfg.ConnString, s.cfg.ROConnString))
+		`, s.cfg.ConnString, s.cfg.ROConnString),
+		})
 		s.Require().NoError(err)
 	default:
 		s.Require().FailNowf("Unsupported external test dialect %q", s.cfg.Dialect)
@@ -171,10 +178,11 @@ func (s *Suite) newDataStore() DataStoreUnderTest {
 }
 
 func (s *Suite) TestInvalidPluginConfiguration() {
-	err := s.ds.Configure(ctx, `
+	_, err := s.ds.Configure(ctx, &configv1.ConfigureRequest{
+		HclConfiguration: `
 		database_type = "wrong"
 		connection_string = "bad"
-	`)
+	`})
 	s.RequireErrorContains(err, "datastore-sql: unsupported database_type: wrong")
 }
 
@@ -201,28 +209,29 @@ func (s *Suite) TestInvalidAWSConfiguration() {
 	}
 	for _, testCase := range testCases {
 		s.T().Run(testCase.name, func(t *testing.T) {
-			err := s.ds.Configure(ctx, testCase.config)
+			_, err := s.ds.Configure(ctx, &configv1.ConfigureRequest{HclConfiguration: testCase.config})
 			s.RequireErrorContains(err, testCase.expectedErr)
 		})
 	}
 }
 
 func (s *Suite) TestInvalidMySQLConfiguration() {
-	err := s.ds.Configure(ctx, `
-		database_type = "mysql"
+	_, err := s.ds.Configure(ctx, &configv1.ConfigureRequest{
+		HclConfiguration: `database_type = "mysql"
 		connection_string = "username:@tcp(127.0.0.1)/spire_test"
-	`)
+	`})
 	s.RequireErrorContains(err, "datastore-sql: invalid mysql config: missing parseTime=true param in connection_string")
 
-	err = s.ds.Configure(ctx, `
+	_, err = s.ds.Configure(ctx, &configv1.ConfigureRequest{HclConfiguration: `
 		database_type = "mysql"
 		ro_connection_string = "username:@tcp(127.0.0.1)/spire_test"
-	`)
+	`})
 	s.RequireErrorContains(err, "datastore-sql: connection_string must be set")
 
-	err = s.ds.Configure(ctx, `
+	_, err = s.ds.Configure(ctx, &configv1.ConfigureRequest{
+		HclConfiguration: `
 		database_type = "mysql"
-	`)
+	`})
 	s.RequireErrorContains(err, "datastore-sql: connection_string must be set")
 }
 

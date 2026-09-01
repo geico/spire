@@ -82,6 +82,11 @@ type DataStore interface {
 	SetCAJournal(ctx context.Context, caJournal *CAJournal) (*CAJournal, error)
 	FetchCAJournal(ctx context.Context, activeX509AuthorityID string) (*CAJournal, error)
 	PruneCAJournals(ctx context.Context, allCAsExpireBefore int64) error
+
+	// Methods for use when loading the datastore as a plugin via the plugin catalog.
+	Close() error
+	Name() string
+	Type() string
 }
 
 // TestableDataStore extends DataStore with helper methods that are only meant

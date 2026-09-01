@@ -1849,7 +1849,7 @@ func (s *PluginSuite) TestPruneAttestedExpiredNodes() {
 	}
 
 	s.Run("prune before expiry", func() {
-		err := s.ds.PruneAttestedExpiredNodes(ctx, now.Add(-time.Hour), false)
+		err := s.ds.PruneAttestedExpiredNodes(ctx, now.Add(-time.Hour), false, 1000) // TODO(tjons): check for parity with other tests on this value
 		s.Require().NoError(err)
 
 		// check that none of the nodes gets deleted
@@ -1861,7 +1861,7 @@ func (s *PluginSuite) TestPruneAttestedExpiredNodes() {
 	})
 
 	s.Run("prune expired attested nodes", func() {
-		err := s.ds.PruneAttestedExpiredNodes(ctx, now.Add(-time.Minute), false)
+		err := s.ds.PruneAttestedExpiredNodes(ctx, now.Add(-time.Minute), false, 1000) // TODO(tjons): check for parity with other tests on this value
 		s.Require().NoError(err)
 
 		// check that the unexpired node is present
@@ -1890,7 +1890,7 @@ func (s *PluginSuite) TestPruneAttestedExpiredNodes() {
 	})
 
 	s.Run("prune expired attested nodes including non-reattestable nodes", func() {
-		err := s.ds.PruneAttestedExpiredNodes(ctx, now.Add(-time.Minute), true)
+		err := s.ds.PruneAttestedExpiredNodes(ctx, now.Add(-time.Minute), true, 1000) // TODO(tjons): check for parity with other tests on this value)
 		s.Require().NoError(err)
 
 		// check that the valid node is still present

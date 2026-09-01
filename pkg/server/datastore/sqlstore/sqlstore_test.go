@@ -14,6 +14,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/sirupsen/logrus/hooks/test"
+	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
 	"github.com/spiffe/spire/pkg/server/datastore/sqltest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -56,11 +57,14 @@ func newTestPlugin(t *testing.T) *Plugin {
 	})
 
 	dbPath := filepath.ToSlash(filepath.Join(t.TempDir(), "db.sqlite3"))
-	err := ds.Configure(ctx, fmt.Sprintf(`
-		database_type = "sqlite3"
-		log_sql = true
-		connection_string = "%s"
-	`, dbPath))
+	c := &configv1.ConfigureRequest{
+		HclConfiguration: fmt.Sprintf(`
+			database_type = "sqlite3"
+			log_sql = true
+			connection_string = "%s"
+		`, dbPath),
+	}
+	_, err := ds.Configure(ctx, c)
 	require.NoError(t, err)
 
 	return ds
@@ -300,10 +304,12 @@ func TestMigration(t *testing.T) {
 					dump = minimalDB()
 				}
 				dumpDB(t, dbPath, dump)
-				err := ds.Configure(ctx, fmt.Sprintf(`
+				_, err := ds.Configure(ctx, &configv1.ConfigureRequest{
+					HclConfiguration: fmt.Sprintf(`
 					database_type = "sqlite3"
 					connection_string = %q
-				`, dbURI))
+				`, dbURI),
+				})
 				if migrationSupported {
 					require.NoError(err)
 				} else {
