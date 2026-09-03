@@ -17,6 +17,7 @@ import (
 	"github.com/spiffe/spire/pkg/common/telemetry"
 	"github.com/tjons/cassandra-toolbox/qb"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/proto"
 )
 
 func (p *Plugin) CountRegistrationEntries(ctx context.Context, req *datastorev1.CountRegistrationEntriesRequest) (*datastorev1.CountRegistrationEntriesResponse, error) {
@@ -194,6 +195,7 @@ func (p *Plugin) createRegistrationEntry(
 			jwt_svid_ttl,
 			dns_names,
 			federated_trust_domains,
+			additional_attributes,
 			selector_types,
 			selector_values,
 			index_terms,
@@ -201,7 +203,7 @@ func (p *Plugin) createRegistrationEntry(
 			federated_trust_domains_full,
 			unrolled_selector_type_val,
 			unrolled_ftd
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	selectorTypes := make([]string, 0, len(entry.Selectors))
@@ -212,6 +214,11 @@ func (p *Plugin) createRegistrationEntry(
 		selectorTypes = append(selectorTypes, sl.Type)
 		selectorValues = append(selectorValues, sl.Value)
 		selectorTypeValueFull = append(selectorTypeValueFull, sl.Type+"|"+sl.Value)
+	}
+
+	aas, err := proto.Marshal(entry.AdditionalAttributes)
+	if err != nil {
+		return nil, newWrappedCassandraError(err)
 	}
 
 	commonVals := []any{
@@ -230,6 +237,7 @@ func (p *Plugin) createRegistrationEntry(
 		entry.JwtSvidTtl,
 		entry.DnsNames,
 		entry.FederatesWith,
+		aas,
 		selectorTypes,
 		selectorValues,
 		indexes,
@@ -482,7 +490,8 @@ func (p *Plugin) fetchRegistrationEntries(
 		Column("jwt_svid_ttl").
 		Column("dns_names").
 		Column("federated_trust_domains").
-		Column("selector_type_value_full")
+		Column("selector_type_value_full").
+		Column("additional_attributes")
 
 	cleanedEntryIDs := make([]string, 0, len(entryIDs))
 	for _, id := range entryIDs {
@@ -509,6 +518,7 @@ func (p *Plugin) fetchRegistrationEntries(
 			result    = new(datastorev1.RegistrationEntry)
 			selectors = []string{}
 			rnum      int64
+			aas       []byte
 		)
 
 		err := scanner.Scan(
@@ -528,6 +538,7 @@ func (p *Plugin) fetchRegistrationEntries(
 			&result.DnsNames,
 			&result.FederatesWith,
 			&selectors,
+			&aas,
 		)
 		if err != nil {
 			return nil, newWrappedCassandraError(err)
@@ -535,6 +546,14 @@ func (p *Plugin) fetchRegistrationEntries(
 
 		result.RevisionNumber = rnum
 		result.Selectors = selectorStringsToSelectorObjs(selectors)
+
+		if len(aas) > 0 {
+			err = proto.Unmarshal(aas, result.AdditionalAttributes)
+			if err != nil {
+				return nil, newWrappedCassandraError(err)
+			}
+		}
+
 		entryMap[result.EntryId] = result
 	}
 
@@ -615,7 +634,8 @@ func (p *Plugin) ListRegistrationEntries(
 		Column("dns_names").
 		Column("federated_trust_domains").
 		Column("selector_types").
-		Column("selector_values")
+		Column("selector_values").
+		Column("additional_attributes")
 
 	collapseToPartitionRow := true
 	onlyFiltersStaticCols := true
@@ -691,7 +711,8 @@ func (p *Plugin) ListRegistrationEntries(
 			dns_names,
 			federated_trust_domains,
 			selector_types,
-			selector_values
+			selector_values,
+			additional_attributes
 		FROM registered_entries  
 	`)
 	if collapseToPartitionRow {
@@ -779,6 +800,7 @@ func (p *Plugin) ListRegistrationEntries(
 		var (
 			result                        = new(datastorev1.RegistrationEntry)
 			selectorTypes, selectorValues []string
+			aas                           = make([]byte, 0)
 			err                           error
 		)
 
@@ -800,6 +822,7 @@ func (p *Plugin) ListRegistrationEntries(
 				&result.FederatesWith,
 				&selectorTypes,
 				&selectorValues,
+				&aas,
 			)
 		} else {
 			err = scanner.Scan(
@@ -820,6 +843,7 @@ func (p *Plugin) ListRegistrationEntries(
 				&result.FederatesWith,
 				&selectorTypes,
 				&selectorValues,
+				&aas,
 			)
 		}
 		if err != nil {
@@ -832,6 +856,13 @@ func (p *Plugin) ListRegistrationEntries(
 				Value: selectorValues[i],
 			}
 			result.Selectors = append(result.Selectors, selector)
+		}
+
+		if len(aas) > 0 {
+			err = proto.Unmarshal(aas, result.AdditionalAttributes)
+			if err != nil {
+				return nil, newWrappedCassandraError(err)
+			}
 		}
 
 		entryMap[result.EntryId] = result
