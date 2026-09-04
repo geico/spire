@@ -302,6 +302,10 @@ func validateRegistrationEntry(entry *datastorev1.RegistrationEntry) error {
 	// it is done to avoid users to mix selectors from different platforms in
 	// entries with storable SVIDs
 	if entry.StoreSvid {
+		if entry.AdditionalAttributes.GetDisableX509SvidPrefetch() {
+			return newValidationError("specifying cache behaviour is incompatible with storable SVIDs")
+		}
+
 		// Selectors must never be empty
 		tpe := entry.Selectors[0].Type
 		for _, t := range entry.Selectors {
