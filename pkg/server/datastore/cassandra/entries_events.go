@@ -18,9 +18,7 @@ func (p *Plugin) ListRegistrationEntryEvents(
 
 	listQuery := qb.NewSelect().
 		From("registration_entry_events").
-		Columns([]string{"id", "entry_id"}).
-		AllowFiltering()
-
+		Columns([]string{"id", "entry_id"})
 	switch {
 	case req.GetLessThanEventId() > 0 && req.GetGreaterThanEventId() > 0:
 		return nil, newCassandraError("can't set both greater and less than event id")

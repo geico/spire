@@ -99,17 +99,23 @@ func (p *Plugin) PruneJoinTokens(
 	findExpiredQuery := qb.NewSelect().
 		From("join_tokens").
 		Column("join_token").
-		Where("expiry", qb.LessThan(req.ExpiresBefore)).
-		AllowFiltering()
+		Column("expiry")
 
 	scanner := p.db.ReadQuery(findExpiredQuery).IterContext(ctx).Scanner()
 	expiredTokens := make([]any, 0)
 	for scanner.Next() {
-		var token string
-		if err := scanner.Scan(&token); err != nil {
+		var (
+			token  string
+			expiry int64
+		)
+		
+		if err := scanner.Scan(&token, &expiry); err != nil {
 			return nil, err
 		}
-		expiredTokens = append(expiredTokens, token)
+
+		if expiry < req.GetExpiresBefore() {
+			expiredTokens = append(expiredTokens, token)
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err

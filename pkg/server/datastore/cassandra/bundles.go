@@ -238,9 +238,7 @@ func (p *Plugin) findFederatedBundleEntries(ctx context.Context, trustDomain str
 		Column("unrolled_ftd").
 		Column("federated_trust_domains_full").
 		Column("federated_trust_domains").
-		From("registered_entries").
-		Where("unrolled_ftd", qb.Equals(trustDomain)).
-		AllowFiltering()
+		From("registered_entries")
 
 	iter := p.db.ReadQuery(federatedEntriesQuery).IterContext(ctx)
 	scanner := iter.Scanner()
@@ -256,6 +254,11 @@ func (p *Plugin) findFederatedBundleEntries(ctx context.Context, trustDomain str
 		); err != nil {
 			return nil, newWrappedCassandraError(err)
 		}
+
+		if entry.UnrolledTrustDomain != trustDomain {
+			continue
+		}
+
 		entries = append(entries, entry)
 	}
 	if err := scanner.Err(); err != nil {
