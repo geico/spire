@@ -504,7 +504,7 @@ func (p *Plugin) fetchRegistrationEntries(
 		}
 	}
 	if len(cleanedEntryIDs) > 0 {
-		fetchRegistrationEntriesQuery = fetchRegistrationEntriesQuery.Where("entry_id", qb.In(cleanedEntryIDs...)).AllowFiltering()
+		fetchRegistrationEntriesQuery = fetchRegistrationEntriesQuery.Where("entry_id", qb.In(cleanedEntryIDs...))
 	}
 	// TODO(tjons): I don't think we need to ALLOW FILTERING here because we have an SAI on entry_id
 	// but cassandra is rejecting the query during the statement preparation phase unless we include it.
@@ -593,33 +593,7 @@ type queryTerm struct {
 	includeExtraColumn bool
 }
 
-func (p *Plugin) ListRegistrationEntries(
-	ctx context.Context,
-	req *datastorev1.ListRegistrationEntriesRequest,
-) (*datastorev1.ListRegistrationEntriesResponse, error) {
-	p.log.WithFields(logrus.Fields{
-		"by_parent_id":   req.GetByParentId(),
-		"by_spiffe_id":   req.GetBySpiffeId(),
-		"has_pagination": req.Pagination != nil,
-	}).Debug("cassandra: ListRegistrationEntries called")
-
-	if req.Pagination != nil {
-		if req.Pagination.PageSize == 0 {
-			return nil, status.Error(codes.InvalidArgument, "cannot paginate with pagesize = 0")
-		}
-
-		if len(req.Pagination.PageToken) > 0 {
-			pToken, err := base64.URLEncoding.Strict().DecodeString(req.Pagination.PageToken)
-			if err != nil {
-				return nil, status.Errorf(codes.InvalidArgument, "could not parse token '%s'", req.Pagination.PageToken)
-			}
-			req.Pagination.PageToken = string(pToken) // TODO(tjons): clean this up and avoid the mutation
-		}
-	}
-	if req.BySelectors != nil && len(req.BySelectors.Selectors) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "cannot list by empty selector set")
-	}
-
+func (p *Plugin) listRegistrationEntriesOld(ctx context.Context, req *datastorev1.ListRegistrationEntriesRequest) (*datastorev1.ListRegistrationEntriesResponse, error) {
 	selectBuilder := qb.NewSelect().
 		From("registered_entries").
 		Column("created_at").
@@ -904,6 +878,337 @@ func (p *Plugin) ListRegistrationEntries(
 	return r, nil
 }
 
+func (p *Plugin) ListRegistrationEntries(
+	ctx context.Context,
+	req *datastorev1.ListRegistrationEntriesRequest,
+) (*datastorev1.ListRegistrationEntriesResponse, error) {
+	p.log.WithFields(logrus.Fields{
+		"by_parent_id":   req.GetByParentId(),
+		"by_spiffe_id":   req.GetBySpiffeId(),
+		"has_pagination": req.Pagination != nil,
+	}).Debug("cassandra: ListRegistrationEntries called")
+
+	if req.Pagination != nil {
+		if req.Pagination.PageSize == 0 {
+			return nil, status.Error(codes.InvalidArgument, "cannot paginate with pagesize = 0")
+		}
+
+		if len(req.Pagination.PageToken) > 0 {
+			pToken, err := base64.URLEncoding.Strict().DecodeString(req.Pagination.PageToken)
+			if err != nil {
+				return nil, status.Errorf(codes.InvalidArgument, "could not parse token '%s'", req.Pagination.PageToken)
+			}
+			req.Pagination.PageToken = string(pToken) // TODO(tjons): clean this up and avoid the mutation
+		}
+	}
+	if req.BySelectors != nil && len(req.BySelectors.Selectors) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "cannot list by empty selector set")
+	}
+
+	return p.listRegistrationEntriesNew(ctx, req)
+
+	// return p.listRegistrationEntriesOld(ctx, req)
+}
+
+func filterByFederatesWith(req *datastorev1.ListRegistrationEntriesRequest, result *datastorev1.RegistrationEntry) bool {
+	if len(result.FederatesWith) == 0 {
+		return false
+	}
+
+	switch req.ByFederatesWith.MatchBehavior {
+	case datastorev1.MatchBehavior_MATCH_BEHAVIOR_MATCH_EXACT:
+		if len(req.GetByFederatesWith().FederatesWith) != len(result.GetFederatesWith()) {
+			return false
+		}
+
+		needsToFederateWith := make(map[string]struct{}, len(req.GetByFederatesWith().FederatesWith))
+		for _, ftd := range req.GetByFederatesWith().FederatesWith {
+			needsToFederateWith[ftd] = struct{}{}
+		}
+
+		for _, efw := range result.GetFederatesWith() {
+			if _, ok := needsToFederateWith[efw]; !ok {
+				return false
+			}
+		}
+
+		return true
+	case datastorev1.MatchBehavior_MATCH_BEHAVIOR_MATCH_SUBSET:
+		if len(result.FederatesWith) > len(req.ByFederatesWith.FederatesWith) {
+			return false
+		}
+
+		federatesWith := make(map[string]struct{}, len(result.FederatesWith))
+		for _, efw := range result.FederatesWith {
+			federatesWith[efw] = struct{}{}
+		}
+
+		for _, ftd := range req.GetByFederatesWith().FederatesWith {
+			if _, ok := federatesWith[ftd]; ok {
+				delete(federatesWith, ftd)
+			}
+		}
+
+		return len(federatesWith) == 0
+	case datastorev1.MatchBehavior_MATCH_BEHAVIOR_MATCH_SUPERSET:
+		if len(result.FederatesWith) < len(req.ByFederatesWith.FederatesWith) {
+			return false
+		}
+
+		mustFederateWith := make(map[string]struct{}, len(req.ByFederatesWith.FederatesWith))
+		for _, ftd := range req.ByFederatesWith.FederatesWith {
+			mustFederateWith[ftd] = struct{}{}
+		}
+
+		for _, ftd := range result.FederatesWith {
+			if _, ok := mustFederateWith[ftd]; ok {
+				delete(mustFederateWith, ftd)
+			}
+		}
+
+		return len(mustFederateWith) == 0
+	case datastorev1.MatchBehavior_MATCH_BEHAVIOR_MATCH_ANY:
+		needsToFederateWith := make(map[string]struct{}, len(req.GetByFederatesWith().FederatesWith))
+		for _, ftd := range req.GetByFederatesWith().FederatesWith {
+			needsToFederateWith[ftd] = struct{}{}
+		}
+
+		for _, efw := range result.GetFederatesWith() {
+			if _, ok := needsToFederateWith[efw]; ok {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	return false // this should not be treated as a fallback
+}
+
+func filterBySelectors(req *datastorev1.BySelectors, result interface {
+	GetSelectors() []*datastorev1.Selector
+}) bool {
+	switch req.MatchBehavior {
+	case datastorev1.MatchBehavior_MATCH_BEHAVIOR_MATCH_EXACT:
+		if len(req.Selectors) != len(result.GetSelectors()) {
+			return false
+		}
+
+		needsToMatch := make(map[string]string, len(req.GetSelectors()))
+		for _, s := range req.GetSelectors() {
+			needsToMatch[s.Type] = s.Value
+		}
+
+		for _, s := range result.GetSelectors() {
+			if v, ok := needsToMatch[s.Type]; !ok || v != s.Value {
+				return false
+			}
+		}
+
+		return true
+	case datastorev1.MatchBehavior_MATCH_BEHAVIOR_MATCH_SUBSET:
+		subset := make(map[string]string, len(result.GetSelectors()))
+		for _, s := range result.GetSelectors() {
+			subset[s.Type] = s.Value
+		}
+
+		for _, s := range req.Selectors {
+			if v, ok := subset[s.Type]; ok && v == s.Value {
+				delete(subset, s.Type)
+			}
+		}
+
+		return len(subset) == 0
+	case datastorev1.MatchBehavior_MATCH_BEHAVIOR_MATCH_SUPERSET:
+		mustMatch := make(map[string]string, len(req.Selectors))
+		for _, s := range req.Selectors {
+			mustMatch[s.Type] = s.Value
+		}
+
+		for _, s := range result.GetSelectors() {
+			if v, ok := mustMatch[s.Type]; ok && v == s.Value {
+				delete(mustMatch, s.Type)
+			}
+		}
+
+		return len(mustMatch) == 0
+	case datastorev1.MatchBehavior_MATCH_BEHAVIOR_MATCH_ANY:
+		needsToMatch := make(map[string]string, len(req.Selectors))
+		for _, s := range req.Selectors {
+			needsToMatch[s.Type] = s.Value
+		}
+
+		matched := false
+		for _, s := range result.GetSelectors() {
+			if v, ok := needsToMatch[s.Type]; ok && v == s.Value {
+				matched = true
+				break
+			}
+		}
+
+		return matched
+	}
+
+	return false
+}
+
+func (p *Plugin) listRegistrationEntriesNew(
+	ctx context.Context,
+	req *datastorev1.ListRegistrationEntriesRequest,
+) (resp *datastorev1.ListRegistrationEntriesResponse, err error) {
+	q := qb.NewSelect().
+		From("registered_entries").
+		Column("created_at").
+		Column("updated_at").
+		Column("entry_id").
+		Column("spiffe_id").
+		Column("parent_id").
+		Column("ttl").
+		Column("admin").
+		Column("downstream").
+		Column("expiry").
+		Column("revision_number").
+		Column("store_svid").
+		Column("hint").
+		Column("jwt_svid_ttl").
+		Column("dns_names").
+		Column("federated_trust_domains").
+		Column("selector_types").
+		Column("selector_values").
+		Column("additional_attributes").
+		PerPartitionLimit(1)
+
+	cqlStmt := q.ToCQL()
+	cqlQuery := p.db.session.Query(cqlStmt, q.QueryValues()...).Consistency(p.db.cfg.ReadConsistency)
+	p.log.WithField("query", cqlStmt).Debug("cassandra: ListRegistrationEntries executing query")
+
+	if req.Pagination != nil {
+		cqlQuery.PageSize(int(req.Pagination.PageSize))
+
+		if len(req.Pagination.PageToken) > 0 {
+			cqlQuery = cqlQuery.PageState([]byte(req.Pagination.PageToken))
+		} else {
+			cqlQuery = cqlQuery.PageState(nil)
+		}
+	} else {
+		// i'm going to try to drop this and instead use the iterator to move through "short" reads
+		// TODO(tjons): make this value configurable
+		cqlQuery.PageSize(500)
+	}
+
+	iter := cqlQuery.IterContext(ctx)
+	entryMap := make(map[string]*datastorev1.RegistrationEntry, iter.NumRows())
+	scanner := iter.Scanner()
+
+	for scanner.Next() {
+		var (
+			result                        = new(datastorev1.RegistrationEntry)
+			selectorTypes, selectorValues []string
+			aas                           = make([]byte, 0)
+			err                           error
+		)
+
+		err = scanner.Scan(
+			&result.CreatedAt,
+			&result.UpdatedAt,
+			&result.EntryId,
+			&result.SpiffeId,
+			&result.ParentId,
+			&result.X509SvidTtl,
+			&result.Admin,
+			&result.Downstream,
+			&result.EntryExpiry,
+			&result.RevisionNumber,
+			&result.StoreSvid,
+			&result.Hint,
+			&result.JwtSvidTtl,
+			&result.DnsNames,
+			&result.FederatesWith,
+			&selectorTypes,
+			&selectorValues,
+			&aas,
+		)
+		if err != nil {
+			return nil, newWrappedCassandraError(err)
+		}
+
+		// preserve this filtering order, it will roughly execute cheapest (scalar comparisons) first
+		// then layer on more expensive (federation) to most expensive (selectors) so that we don't
+		// waste expensive checks on a row we could pre-eliminate
+		if req.BySpiffeId != "" && req.BySpiffeId != result.SpiffeId {
+			continue
+		}
+
+		if req.ByHint != "" && req.ByHint != result.Hint {
+			continue
+		}
+
+		if req.ByParentId != "" && req.ByParentId != result.ParentId {
+			continue
+		}
+
+		if req.FilterByDownstream && req.DownstreamValue != result.Downstream {
+			continue
+		}
+
+		if req.ByFederatesWith != nil && !filterByFederatesWith(req, result) {
+			continue
+		}
+
+		for i := range selectorTypes {
+			selector := &datastorev1.Selector{
+				Type:  selectorTypes[i],
+				Value: selectorValues[i],
+			}
+			result.Selectors = append(result.Selectors, selector)
+		}
+
+		if req.BySelectors != nil && !filterBySelectors(req.BySelectors, result) {
+			continue
+		}
+
+		if len(aas) > 0 {
+			err = proto.Unmarshal(aas, result.AdditionalAttributes)
+			if err != nil {
+				return nil, newWrappedCassandraError(err)
+			}
+		}
+
+		entryMap[result.EntryId] = result
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, newWrappedCassandraError(err)
+	}
+	pageState := iter.PageState()
+	p.log.WithField("result_count", len(entryMap)).Debug("cassandra: ListRegistrationEntries scan complete")
+
+	resp = &datastorev1.ListRegistrationEntriesResponse{
+		Entries: slices.Collect(maps.Values(entryMap)),
+	}
+
+	if req.Pagination != nil {
+		resp.Pagination = &datastorev1.Pagination{
+			PageSize: req.Pagination.PageSize,
+		}
+
+		// go ahead and "peek"	if there is a next page...
+		peeker := p.db.session.Query(cqlStmt, q.QueryValues()...).Consistency(p.db.cfg.ReadConsistency)
+
+		peeker.PageState(pageState)
+		peeker.PageSize(1)                  // I hate all this and i think it would be better if we just dropped the silly next pagination requirement for cassandra
+		peekIter := peeker.IterContext(ctx) // at a minimum, we should feature flag this
+		if peekIter.NumRows() > 0 {
+			resp.Pagination.PageToken = base64.URLEncoding.Strict().EncodeToString(pageState)
+		}
+		if err := peekIter.Close(); err != nil {
+			return nil, newWrappedCassandraError(err)
+		}
+	}
+
+	return
+}
+
 func (p *Plugin) PruneRegistrationEntries(
 	ctx context.Context,
 	req *datastorev1.PruneRegistrationEntriesRequest,
@@ -912,10 +1217,7 @@ func (p *Plugin) PruneRegistrationEntries(
 
 	selectPruneQuery := qb.NewSelect().
 		From("registered_entries").
-		Columns([]string{"entry_id", "spiffe_id", "parent_id", "federated_trust_domains"}).
-		Where("expiry", qb.LessThan(req.ExpiresBefore)).
-		Where("expiry", qb.GreaterThan(0)).
-		AllowFiltering()
+		Columns([]string{"entry_id", "spiffe_id", "parent_id", "federated_trust_domains", "expiry"})
 
 	query := p.db.ReadQuery(selectPruneQuery).Consistency(p.db.cfg.ReadConsistency)
 	iter := query.IterContext(ctx)
@@ -925,6 +1227,7 @@ func (p *Plugin) PruneRegistrationEntries(
 		spiffeID              string
 		parentID              string
 		federatedTrustDomains []string
+		expiry                int64
 	}
 
 	entries := make([]entryToPrune, 0, iter.NumRows())
@@ -932,10 +1235,15 @@ func (p *Plugin) PruneRegistrationEntries(
 
 	for scanner.Next() {
 		var entry entryToPrune
-		err := scanner.Scan(&entry.entryID, &entry.spiffeID, &entry.parentID, &entry.federatedTrustDomains)
+		err := scanner.Scan(&entry.entryID, &entry.spiffeID, &entry.parentID, &entry.federatedTrustDomains, &entry.expiry)
 		if err != nil {
 			return nil, newWrappedCassandraError(err)
 		}
+
+		if entry.expiry == 0 || entry.expiry >= req.ExpiresBefore {
+			continue
+		}
+
 		entries = append(entries, entry)
 	}
 	if err := iter.Close(); err != nil {

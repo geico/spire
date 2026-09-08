@@ -3053,6 +3053,7 @@ func (s *PluginSuite) testListRegistrationEntries(dataConsistency datastore.Data
 			expectEntriesOut:      []*common.RegistrationEntry{foobarB},
 			expectPagedTokensIn:   []string{"", "1"},
 			expectPagedEntriesOut: [][]*common.RegistrationEntry{{foobarB}, {}},
+			focus:                 true,
 		},
 		{
 			test:                  "by parent ID and exact selectors",
@@ -3080,7 +3081,6 @@ func (s *PluginSuite) testListRegistrationEntries(dataConsistency datastore.Data
 			expectEntriesOut:      []*common.RegistrationEntry{foobarB, foobarAB1},
 			expectPagedTokensIn:   []string{"", "1", "2"},
 			expectPagedEntriesOut: [][]*common.RegistrationEntry{{foobarB}, {foobarAB1}, {}},
-			focus:                 true,
 		},
 		{
 			test:                  "by parent ID and subset selectors no match",
@@ -3191,7 +3191,6 @@ func (s *PluginSuite) testListRegistrationEntries(dataConsistency datastore.Data
 			expectEntriesOut:      []*common.RegistrationEntry{bazbarAB1, bazbarAD12, bazbarCD12},
 			expectPagedTokensIn:   []string{"", "6", "7", "9"},
 			expectPagedEntriesOut: [][]*common.RegistrationEntry{{bazbarAB1}, {bazbarAD12}, {bazbarCD12}, {}},
-			focus:                 true,
 		},
 		{
 			test:                  "by parentID and federatesWith many match any",

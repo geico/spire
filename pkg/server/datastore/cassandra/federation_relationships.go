@@ -153,8 +153,7 @@ func (p *Plugin) ListFederationRelationships(
 		Column("bundle_endpoint_url").
 		Column("bundle_endpoint_profile").
 		Column("endpoint_spiffe_id").
-		From("federated_trust_domains").
-		AllowFiltering()
+		From("federated_trust_domains")
 
 	query := p.db.ReadQuery(listQuery)
 	pager.BindToQuery(query)

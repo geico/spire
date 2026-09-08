@@ -244,7 +244,6 @@ func (p *Plugin) ListAttestedNodes(ctx context.Context, req *datastorev1.ListAtt
 	if req.BySelectors != nil && len(req.BySelectors.Selectors) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "cannot list by empty selectors set")
 	}
-	var includeExtraCol bool
 
 	q := qb.NewSelect().
 		Column("spiffe_id").
@@ -254,48 +253,13 @@ func (p *Plugin) ListAttestedNodes(ctx context.Context, req *datastorev1.ListAtt
 		Column("new_serial_number").
 		Column("new_cert_not_after").
 		Column("can_reattest").
+		Column("banned").
+		Column("selector_type_value_full").
 		From("attested_node_entries").
-		AllowFiltering()
+		PerPartitionLimit(1)
 
-	if req.FetchSelectors {
-		q.Column("selector_type_value_full")
-	}
-
-	if req.ByBanned {
-		if req.BannedValue {
-			// The original SQL implementation marks nodes as "banned" by setting
-			// their serial number to an empty string. However, since Cassandra
-			// does not support filtering with "!=" operator, we add a dedicated
-			// "banned" boolean column to simplify queries.
-			q.Where("banned", qb.Equals(true))
-		} else {
-			q.Where("banned", qb.Equals(false))
-		}
-	}
-	if req.ByAttestationType != "" {
-		q.Where("attestation_data_type", qb.Equals(req.ByAttestationType))
-	}
-	if req.ByExpiresBefore > 0 {
-		q.Where("cert_not_after", qb.LessThan(req.ByExpiresBefore))
-	}
-	if req.ByValidAt > 0 {
-		q.Where("cert_not_after", qb.GreaterThan(req.ByValidAt))
-	}
-	if req.ByCanReattest {
-		q.Where("can_reattest", qb.Equals(req.CanReattestValue))
-	}
-	if req.BySelectors != nil {
-		includeExtraCol = generateSelectorFilters(req.BySelectors, q)
-		if includeExtraCol {
-			q.Column("updated_at")
-		}
-	} else {
-		q.Distinct() // No need to fetch multiple rows per node
-	}
-
-	query, _ := q.Build()
-
-	cqlQuery := p.db.session.Query(query, q.QueryValues()...)
+	s := q.ToCQL()
+	cqlQuery := p.db.session.Query(s, q.QueryValues()...)
 	cqlQuery.Consistency(p.db.cfg.ReadConsistency)
 
 	cqlQuery = pager.BindToQuery(cqlQuery)
@@ -312,6 +276,7 @@ func (p *Plugin) ListAttestedNodes(ctx context.Context, req *datastorev1.ListAtt
 			err                   error
 			model                 datastorev1.AttestedNode
 			selectorTypeValueFull []string
+			banned                bool
 
 			scanVals = []any{
 				&model.SpiffeId,
@@ -321,6 +286,8 @@ func (p *Plugin) ListAttestedNodes(ctx context.Context, req *datastorev1.ListAtt
 				&model.NewCertSerialNumber,
 				&model.NewCertNotAfter,
 				&model.CanReattest,
+				&banned,
+				&selectorTypeValueFull,
 			}
 		)
 
@@ -330,21 +297,46 @@ func (p *Plugin) ListAttestedNodes(ctx context.Context, req *datastorev1.ListAtt
 		//
 		// we will assign the error from scanner.Scan to err, and handle it below
 		// to avoid duplicating error handling code.
-		if req.FetchSelectors {
-			scanVals = append(scanVals, &selectorTypeValueFull)
-		}
-		if includeExtraCol {
-			// we need to include the row-level distinguishing column
-			// in some cases to allow filtering on non-static columns
-			scanVals = append(scanVals, &model.UpdatedAt)
-		}
-
 		if err = scanner.Scan(scanVals...); err != nil {
 			return nil, newWrappedCassandraError(err)
 		}
 
 		// TODO(tjons): can we avoid having to store these selectors in the intermediary type?
 		model.Selectors = selectorStringsToSelectorObjs(selectorTypeValueFull)
+
+		if len(req.BySpiffeIds) > 0 {
+			if !slices.Contains(req.BySpiffeIds, model.SpiffeId) {
+				continue
+			}
+		}
+
+		if req.ByBanned && banned != req.BannedValue {
+			continue
+		}
+		if req.ByAttestationType != "" && model.AttestationDataType != req.ByAttestationType {
+			continue
+		}
+		if req.ByExpiresBefore > 0 && model.CertNotAfter >= req.ByExpiresBefore {
+			continue
+		}
+		if req.ByValidAt > 0 && model.CertNotAfter <= req.ByValidAt {
+			continue
+		}
+		if req.ByCanReattest && model.CanReattest != req.CanReattestValue {
+			continue
+		}
+
+		if req.BySelectors != nil && !filterBySelectors(req.BySelectors, &model) {
+			continue
+		}
+
+		// it's more efficient for cassandra to filter selectors on client side in the current schema,
+		// so we load them always. however, the RDBMS impl doesn't expect them all the time, so we
+		// will drop them when the caller did not request them.
+		if !req.FetchSelectors {
+			model.Selectors = nil
+		}
+
 		attestedNodes[model.SpiffeId] = &model
 	}
 
