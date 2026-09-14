@@ -1849,7 +1849,7 @@ func (s *PluginSuite) TestPruneAttestedExpiredNodes() {
 	}
 
 	s.Run("prune before expiry", func() {
-		err := s.ds.PruneAttestedExpiredNodes(ctx, now.Add(-time.Hour), false)
+		err := s.ds.PruneAttestedExpiredNodes(ctx, now.Add(-time.Hour), false, 1000) // TODO(tjons): check for parity with other tests on this value
 		s.Require().NoError(err)
 
 		// check that none of the nodes gets deleted
@@ -1861,7 +1861,7 @@ func (s *PluginSuite) TestPruneAttestedExpiredNodes() {
 	})
 
 	s.Run("prune expired attested nodes", func() {
-		err := s.ds.PruneAttestedExpiredNodes(ctx, now.Add(-time.Minute), false)
+		err := s.ds.PruneAttestedExpiredNodes(ctx, now.Add(-time.Minute), false, 1000) // TODO(tjons): check for parity with other tests on this value
 		s.Require().NoError(err)
 
 		// check that the unexpired node is present
@@ -1890,7 +1890,7 @@ func (s *PluginSuite) TestPruneAttestedExpiredNodes() {
 	})
 
 	s.Run("prune expired attested nodes including non-reattestable nodes", func() {
-		err := s.ds.PruneAttestedExpiredNodes(ctx, now.Add(-time.Minute), true)
+		err := s.ds.PruneAttestedExpiredNodes(ctx, now.Add(-time.Minute), true, 1000) // TODO(tjons): check for parity with other tests on this value)
 		s.Require().NoError(err)
 
 		// check that the valid node is still present
@@ -3053,6 +3053,7 @@ func (s *PluginSuite) testListRegistrationEntries(dataConsistency datastore.Data
 			expectEntriesOut:      []*common.RegistrationEntry{foobarB},
 			expectPagedTokensIn:   []string{"", "1"},
 			expectPagedEntriesOut: [][]*common.RegistrationEntry{{foobarB}, {}},
+			focus:                 true,
 		},
 		{
 			test:                  "by parent ID and exact selectors",
@@ -3080,7 +3081,6 @@ func (s *PluginSuite) testListRegistrationEntries(dataConsistency datastore.Data
 			expectEntriesOut:      []*common.RegistrationEntry{foobarB, foobarAB1},
 			expectPagedTokensIn:   []string{"", "1", "2"},
 			expectPagedEntriesOut: [][]*common.RegistrationEntry{{foobarB}, {foobarAB1}, {}},
-			focus:                 true,
 		},
 		{
 			test:                  "by parent ID and subset selectors no match",
@@ -3191,7 +3191,6 @@ func (s *PluginSuite) testListRegistrationEntries(dataConsistency datastore.Data
 			expectEntriesOut:      []*common.RegistrationEntry{bazbarAB1, bazbarAD12, bazbarCD12},
 			expectPagedTokensIn:   []string{"", "6", "7", "9"},
 			expectPagedEntriesOut: [][]*common.RegistrationEntry{{bazbarAB1}, {bazbarAD12}, {bazbarCD12}, {}},
-			focus:                 true,
 		},
 		{
 			test:                  "by parentID and federatesWith many match any",

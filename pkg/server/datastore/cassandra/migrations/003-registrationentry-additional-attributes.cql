@@ -1,0 +1,1 @@
+ALTER TABLE registered_entries ADD IF NOT EXISTS additional_attributes BLOB STATIC;
