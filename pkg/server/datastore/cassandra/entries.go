@@ -767,7 +767,7 @@ func (p *Plugin) listRegistrationEntriesOld(ctx context.Context, req *datastorev
 			cqlQuery = cqlQuery.PageState(nil)
 		}
 	} else {
-		cqlQuery.PageSize(100_000_000) // effectively no limit
+		cqlQuery.PageSize(1000) // effectively no limit
 	}
 
 	iter := cqlQuery.IterContext(ctx)
@@ -1093,7 +1093,7 @@ func (p *Plugin) listRegistrationEntriesNew(
 	} else {
 		// i'm going to try to drop this and instead use the iterator to move through "short" reads
 		// TODO(tjons): make this value configurable
-		cqlQuery.PageSize(500)
+		cqlQuery.PageSize(1000)
 	}
 
 	iter := cqlQuery.IterContext(ctx)
