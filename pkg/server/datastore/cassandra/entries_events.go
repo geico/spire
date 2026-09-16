@@ -14,11 +14,11 @@ func (p *Plugin) ListRegistrationEntryEvents(
 	ctx context.Context,
 	req *datastorev1.ListRegistrationEntryEventsRequest,
 ) (*datastorev1.ListRegistrationEntryEventsResponse, error) {
+	p.log.Debug("cassandra: ListRegistrationEntryEvents called")
+
 	listQuery := qb.NewSelect().
 		From("registration_entry_events").
-		Columns([]string{"id", "entry_id"}).
-		AllowFiltering()
-
+		Columns([]string{"id", "entry_id"})
 	switch {
 	case req.GetLessThanEventId() > 0 && req.GetGreaterThanEventId() > 0:
 		return nil, newCassandraError("can't set both greater and less than event id")

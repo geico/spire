@@ -15,6 +15,8 @@ func (p *Plugin) ListAttestedNodeEvents(
 	ctx context.Context,
 	req *datastorev1.ListAttestedNodeEventsRequest,
 ) (*datastorev1.ListAttestedNodeEventsResponse, error) {
+	p.log.Debug("cassandra: ListAttestedNodeEvents called")
+
 	if req == nil {
 		return nil, errors.New("request is required")
 	}

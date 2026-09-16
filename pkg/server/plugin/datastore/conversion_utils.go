@@ -214,21 +214,22 @@ func fromServerToPluginRegistrationEntry(entry *common.RegistrationEntry) *datas
 	}
 
 	return &datastorev1.RegistrationEntry{
-		EntryId:        entry.EntryId,
-		ParentId:       entry.ParentId,
-		SpiffeId:       entry.SpiffeId,
-		Selectors:      fromServerToPluginSelectors(entry.Selectors),
-		FederatesWith:  entry.FederatesWith,
-		Admin:          entry.Admin,
-		DnsNames:       entry.DnsNames,
-		X509SvidTtl:    entry.X509SvidTtl,
-		JwtSvidTtl:     entry.JwtSvidTtl,
-		Downstream:     entry.Downstream,
-		StoreSvid:      entry.StoreSvid,
-		EntryExpiry:    entry.EntryExpiry,
-		Hint:           entry.Hint,
-		CreatedAt:      entry.CreatedAt,
-		RevisionNumber: entry.RevisionNumber,
+		EntryId:              entry.EntryId,
+		ParentId:             entry.ParentId,
+		SpiffeId:             entry.SpiffeId,
+		Selectors:            fromServerToPluginSelectors(entry.Selectors),
+		FederatesWith:        entry.FederatesWith,
+		Admin:                entry.Admin,
+		DnsNames:             entry.DnsNames,
+		X509SvidTtl:          entry.X509SvidTtl,
+		JwtSvidTtl:           entry.JwtSvidTtl,
+		Downstream:           entry.Downstream,
+		StoreSvid:            entry.StoreSvid,
+		EntryExpiry:          entry.EntryExpiry,
+		Hint:                 entry.Hint,
+		CreatedAt:            entry.CreatedAt,
+		RevisionNumber:       entry.RevisionNumber,
+		AdditionalAttributes: fromServerToPluginAdditionalAttributes(entry.AdditionalAttributes),
 	}
 }
 
@@ -238,21 +239,22 @@ func fromPluginToServerRegistrationEntry(entry *datastorev1.RegistrationEntry) *
 	}
 
 	return &common.RegistrationEntry{
-		EntryId:        entry.EntryId,
-		ParentId:       entry.ParentId,
-		SpiffeId:       entry.SpiffeId,
-		Selectors:      fromPluginToServerSelectors(entry.Selectors),
-		FederatesWith:  entry.FederatesWith,
-		Admin:          entry.Admin,
-		DnsNames:       entry.DnsNames,
-		X509SvidTtl:    entry.X509SvidTtl,
-		JwtSvidTtl:     entry.JwtSvidTtl,
-		Downstream:     entry.Downstream,
-		StoreSvid:      entry.StoreSvid,
-		EntryExpiry:    entry.EntryExpiry,
-		Hint:           entry.Hint,
-		CreatedAt:      entry.CreatedAt,
-		RevisionNumber: entry.RevisionNumber,
+		EntryId:              entry.EntryId,
+		ParentId:             entry.ParentId,
+		SpiffeId:             entry.SpiffeId,
+		Selectors:            fromPluginToServerSelectors(entry.Selectors),
+		FederatesWith:        entry.FederatesWith,
+		Admin:                entry.Admin,
+		DnsNames:             entry.DnsNames,
+		X509SvidTtl:          entry.X509SvidTtl,
+		JwtSvidTtl:           entry.JwtSvidTtl,
+		Downstream:           entry.Downstream,
+		StoreSvid:            entry.StoreSvid,
+		EntryExpiry:          entry.EntryExpiry,
+		Hint:                 entry.Hint,
+		CreatedAt:            entry.CreatedAt,
+		RevisionNumber:       entry.RevisionNumber,
+		AdditionalAttributes: fromPluginToServerAdditionalAttributes(entry.AdditionalAttributes),
 	}
 }
 
@@ -440,4 +442,26 @@ func fromServerToPluginDeleteMode(mode ds_types.DeleteMode) (datastorev1.DeleteM
 	}
 
 	return 0, fmt.Errorf("invalid delete mode: %v", mode)
+}
+
+func fromServerToPluginAdditionalAttributes(attrs *common.RegistrationEntry_AdditionalAttributes) *datastorev1.RegistrationEntry_AdditionalAttributes {
+	if attrs == nil {
+		return nil
+	}
+
+	return &datastorev1.RegistrationEntry_AdditionalAttributes{
+		DisableX509SvidPrefetch: attrs.DisableX509SvidPrefetch,
+		JwtSvidIncludeJti:       attrs.JwtSvidIncludeJti,
+	}
+}
+
+func fromPluginToServerAdditionalAttributes(attrs *datastorev1.RegistrationEntry_AdditionalAttributes) *common.RegistrationEntry_AdditionalAttributes {
+	if attrs == nil {
+		return nil
+	}
+
+	return &common.RegistrationEntry_AdditionalAttributes{
+		DisableX509SvidPrefetch: attrs.DisableX509SvidPrefetch,
+		JwtSvidIncludeJti:       attrs.JwtSvidIncludeJti,
+	}
 }

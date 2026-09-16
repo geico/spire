@@ -32,5 +32,5 @@ func (repo *dataStoreRepository) BuiltIns() []catalog.BuiltIn {
 
 type datastoreV1Alpha1 struct{}
 
-func (datastoreV1Alpha1) New() catalog.Facade { return new(datastore.V1Alpha1) }
-func (datastoreV1Alpha1) Deprecated() bool    { return false }
+func (datastoreV1Alpha1) New() catalog.Facade        { return new(datastore.V1Alpha1) }
+func (datastoreV1Alpha1) Deprecated() (bool, string) { return false, "" }

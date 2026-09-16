@@ -8,6 +8,7 @@ import (
 	"time"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	"github.com/sirupsen/logrus"
 	datastorev1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/server/datastore/v1alpha1"
 	"github.com/tjons/cassandra-toolbox/pages"
 	"github.com/tjons/cassandra-toolbox/qb"
@@ -16,6 +17,8 @@ import (
 )
 
 func (p *Plugin) CountAttestedNodes(ctx context.Context, req *datastorev1.CountAttestedNodesRequest) (*datastorev1.CountAttestedNodesResponse, error) {
+	p.log.Debug("cassandra: CountAttestedNodes called")
+
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
@@ -69,6 +72,8 @@ func (p *Plugin) CountAttestedNodes(ctx context.Context, req *datastorev1.CountA
 }
 
 func (p *Plugin) CreateAttestedNode(ctx context.Context, req *datastorev1.CreateAttestedNodeRequest) (*datastorev1.CreateAttestedNodeResponse, error) {
+	p.log.WithField("spiffe_id", req.GetNode().GetSpiffeId()).Debug("cassandra: CreateAttestedNode called")
+
 	if req == nil || req.Node == nil {
 		return nil, newCassandraError("invalid request: missing attested node")
 	}
@@ -144,6 +149,8 @@ func (p *Plugin) createAttestedNode(ctx context.Context, model *datastorev1.Atte
 }
 
 func (p *Plugin) DeleteAttestedNode(ctx context.Context, req *datastorev1.DeleteAttestedNodeRequest) (*datastorev1.DeleteAttestedNodeResponse, error) {
+	p.log.WithField("spiffe_id", req.GetSpiffeId()).Debug("cassandra: DeleteAttestedNode called")
+
 	if req == nil || req.SpiffeId == "" {
 		return nil, status.Error(codes.InvalidArgument, "spiffe id is required")
 	}
@@ -178,6 +185,8 @@ func (p *Plugin) DeleteAttestedNode(ctx context.Context, req *datastorev1.Delete
 }
 
 func (p *Plugin) FetchAttestedNode(ctx context.Context, req *datastorev1.FetchAttestedNodeRequest) (*datastorev1.FetchAttestedNodeResponse, error) {
+	p.log.WithField("spiffe_id", req.GetSpiffeId()).Debug("cassandra: FetchAttestedNode called")
+
 	if req == nil || req.SpiffeId == "" {
 		return nil, status.Error(codes.InvalidArgument, "spiffe id is required")
 	}
@@ -224,12 +233,17 @@ func (p *Plugin) FetchAttestedNode(ctx context.Context, req *datastorev1.FetchAt
 }
 
 func (p *Plugin) ListAttestedNodes(ctx context.Context, req *datastorev1.ListAttestedNodesRequest) (*datastorev1.ListAttestedNodesResponse, error) {
+	p.log.WithFields(logrus.Fields{
+		"by_attestation_type": req.GetByAttestationType(),
+		"by_banned":           req.GetByBanned(),
+		"fetch_selectors":     req.GetFetchSelectors(),
+		"has_pagination":      req.GetPagination() != nil,
+	}).Debug("cassandra: ListAttestedNodes called")
 	pager := pages.NewQueryPaginator(req.GetPagination() != nil, req.GetPagination().GetPageSize(), req.GetPagination().GetPageToken())
 
 	if req.BySelectors != nil && len(req.BySelectors.Selectors) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "cannot list by empty selectors set")
 	}
-	var includeExtraCol bool
 
 	q := qb.NewSelect().
 		Column("spiffe_id").
@@ -239,48 +253,13 @@ func (p *Plugin) ListAttestedNodes(ctx context.Context, req *datastorev1.ListAtt
 		Column("new_serial_number").
 		Column("new_cert_not_after").
 		Column("can_reattest").
+		Column("banned").
+		Column("selector_type_value_full").
 		From("attested_node_entries").
-		AllowFiltering()
+		PerPartitionLimit(1)
 
-	if req.FetchSelectors {
-		q.Column("selector_type_value_full")
-	}
-
-	if req.ByBanned {
-		if req.BannedValue {
-			// The original SQL implementation marks nodes as "banned" by setting
-			// their serial number to an empty string. However, since Cassandra
-			// does not support filtering with "!=" operator, we add a dedicated
-			// "banned" boolean column to simplify queries.
-			q.Where("banned", qb.Equals(true))
-		} else {
-			q.Where("banned", qb.Equals(false))
-		}
-	}
-	if req.ByAttestationType != "" {
-		q.Where("attestation_data_type", qb.Equals(req.ByAttestationType))
-	}
-	if req.ByExpiresBefore > 0 {
-		q.Where("cert_not_after", qb.LessThan(req.ByExpiresBefore))
-	}
-	if req.ByValidAt > 0 {
-		q.Where("cert_not_after", qb.GreaterThan(req.ByValidAt))
-	}
-	if req.ByCanReattest {
-		q.Where("can_reattest", qb.Equals(req.CanReattestValue))
-	}
-	if req.BySelectors != nil {
-		includeExtraCol = generateSelectorFilters(req.BySelectors, q)
-		if includeExtraCol {
-			q.Column("updated_at")
-		}
-	} else {
-		q.Distinct() // No need to fetch multiple rows per node
-	}
-
-	query, _ := q.Build()
-
-	cqlQuery := p.db.session.Query(query, q.QueryValues()...)
+	s := q.ToCQL()
+	cqlQuery := p.db.session.Query(s, q.QueryValues()...)
 	cqlQuery.Consistency(p.db.cfg.ReadConsistency)
 
 	cqlQuery = pager.BindToQuery(cqlQuery)
@@ -297,6 +276,7 @@ func (p *Plugin) ListAttestedNodes(ctx context.Context, req *datastorev1.ListAtt
 			err                   error
 			model                 datastorev1.AttestedNode
 			selectorTypeValueFull []string
+			banned                bool
 
 			scanVals = []any{
 				&model.SpiffeId,
@@ -306,6 +286,8 @@ func (p *Plugin) ListAttestedNodes(ctx context.Context, req *datastorev1.ListAtt
 				&model.NewCertSerialNumber,
 				&model.NewCertNotAfter,
 				&model.CanReattest,
+				&banned,
+				&selectorTypeValueFull,
 			}
 		)
 
@@ -315,27 +297,54 @@ func (p *Plugin) ListAttestedNodes(ctx context.Context, req *datastorev1.ListAtt
 		//
 		// we will assign the error from scanner.Scan to err, and handle it below
 		// to avoid duplicating error handling code.
-		if req.FetchSelectors {
-			scanVals = append(scanVals, &selectorTypeValueFull)
-		}
-		if includeExtraCol {
-			// we need to include the row-level distinguishing column
-			// in some cases to allow filtering on non-static columns
-			scanVals = append(scanVals, &model.UpdatedAt)
-		}
-
 		if err = scanner.Scan(scanVals...); err != nil {
 			return nil, newWrappedCassandraError(err)
 		}
 
 		// TODO(tjons): can we avoid having to store these selectors in the intermediary type?
 		model.Selectors = selectorStringsToSelectorObjs(selectorTypeValueFull)
+
+		if len(req.BySpiffeIds) > 0 {
+			if !slices.Contains(req.BySpiffeIds, model.SpiffeId) {
+				continue
+			}
+		}
+
+		if req.ByBanned && banned != req.BannedValue {
+			continue
+		}
+		if req.ByAttestationType != "" && model.AttestationDataType != req.ByAttestationType {
+			continue
+		}
+		if req.ByExpiresBefore > 0 && model.CertNotAfter >= req.ByExpiresBefore {
+			continue
+		}
+		if req.ByValidAt > 0 && model.CertNotAfter <= req.ByValidAt {
+			continue
+		}
+		if req.ByCanReattest && model.CanReattest != req.CanReattestValue {
+			continue
+		}
+
+		if req.BySelectors != nil && !filterBySelectors(req.BySelectors, &model) {
+			continue
+		}
+
+		// it's more efficient for cassandra to filter selectors on client side in the current schema,
+		// so we load them always. however, the RDBMS impl doesn't expect them all the time, so we
+		// will drop them when the caller did not request them.
+		if !req.FetchSelectors {
+			model.Selectors = nil
+		}
+
 		attestedNodes[model.SpiffeId] = &model
 	}
 
 	if err := scanner.Err(); err != nil {
 		return nil, newWrappedCassandraError(err)
 	}
+
+	p.log.WithField("result_count", len(attestedNodes)).Debug("cassandra: ListAttestedNodes scan complete")
 
 	pager.NextPageToken()
 
@@ -381,6 +390,8 @@ var AllTrueAgentMask = &datastorev1.AttestedNodeMask{
 }
 
 func (p *Plugin) UpdateAttestedNode(ctx context.Context, req *datastorev1.UpdateAttestedNodeRequest) (*datastorev1.UpdateAttestedNodeResponse, error) {
+	p.log.WithField("spiffe_id", req.GetNode().GetSpiffeId()).Debug("cassandra: UpdateAttestedNode called")
+
 	if req == nil || req.Node == nil {
 		return nil, newCassandraError("invalid request: missing attested node")
 	}
@@ -472,6 +483,8 @@ func (p *Plugin) PruneAttestedExpiredNodes(
 	ctx context.Context,
 	req *datastorev1.PruneAttestedExpiredNodesRequest,
 ) (*datastorev1.PruneAttestedExpiredNodesResponse, error) {
+	p.log.WithField("expires_before", req.GetExpiresBefore()).Debug("cassandra: PruneAttestedExpiredNodes called")
+
 	if req == nil || req.ExpiresBefore == 0 {
 		return nil, newCassandraError("invalid request: missing expired_before timestamp")
 	}
@@ -558,16 +571,19 @@ func (p *Plugin) ListNodeSelectors(ctx context.Context, req *datastorev1.ListNod
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
 
+	// Query all partitions without a WHERE clause to avoid ALLOW FILTERING.
+	// Previously this query used WHERE cert_not_after > ? ALLOW FILTERING,
+	// which forced Cassandra to perform a full partition scan with post-read
+	// predicate evaluation — averaging 1.91s and frequently timing out at 5s.
+	// By removing the WHERE clause, Cassandra performs a clean partition-skipping
+	// scan (DISTINCT) without filtering overhead. We apply the cert_not_after
+	// filter in application code instead, which is a trivial integer comparison.
 	q := qb.NewSelect().
 		Distinct().
 		Column("spiffe_id").
 		Column("selector_type_value_full").
-		From("attested_node_entries").
-		AllowFiltering()
-
-	if req.ValidAt != 0 {
-		q.Where("cert_not_after", qb.GreaterThan(req.ValidAt))
-	}
+		Column("cert_not_after").
+		From("attested_node_entries")
 
 	query, _ := q.Build()
 
@@ -577,11 +593,16 @@ func (p *Plugin) ListNodeSelectors(ctx context.Context, req *datastorev1.ListNod
 
 	for scanner.Next() {
 		var (
-			spiffeID string
-			stvList  []string
+			spiffeID     string
+			stvList      []string
+			certNotAfter int64
 		)
-		if err := scanner.Scan(&spiffeID, &stvList); err != nil {
+		if err := scanner.Scan(&spiffeID, &stvList, &certNotAfter); err != nil {
 			return nil, newWrappedCassandraError(err)
+		}
+
+		if req.GetValidAt() != 0 && certNotAfter <= req.GetValidAt() {
+			continue // Skip expired nodes if a valid_at filter is provided
 		}
 
 		selectorEntries[spiffeID] = &datastorev1.NodeSelectorEntry{

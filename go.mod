@@ -333,4 +333,4 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace github.com/spiffe/spire-plugin-sdk => github.com/geico/spire-plugin-sdk v0.0.0-20260302202914-953323cdca15
+replace github.com/spiffe/spire-plugin-sdk => github.com/geico/spire-plugin-sdk v0.0.0-20260915235910-05f4538bed0a
