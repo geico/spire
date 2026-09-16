@@ -202,12 +202,12 @@ func TestConfigure(t *testing.T) {
 
 			log, _ := test.NewNullLogger()
 			p := New(log)
-			err := p.Configure(ctx, fmt.Sprintf(`
+			_, err := p.Configure(ctx, &configv1.ConfigureRequest{HclConfiguration: fmt.Sprintf(`
 				database_type = "sqlite3"
 				log_sql = true
 				connection_string = "%s"
 				%s
-			`, dbPath, tt.giveDBConfig))
+			`, dbPath, tt.giveDBConfig)})
 			require.NoError(t, err)
 			defer p.Close()
 

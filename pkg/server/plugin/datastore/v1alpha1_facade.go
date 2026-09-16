@@ -259,17 +259,6 @@ func (v1 *V1Alpha1) DeleteRegistrationEntry(ctx context.Context, entryID string)
 	return fromPluginToServerRegistrationEntry(resp.GetEntry()), nil
 }
 
-func (v1 *V1Alpha1) FetchRegistrationEntry(ctx context.Context, entryID string) (*common.RegistrationEntry, error) {
-	resp, err := v1.DataStorePluginClient.FetchRegistrationEntry(ctx, &datastorev1.FetchRegistrationEntryRequest{
-		EntryId: entryID,
-	})
-	if err != nil {
-		return nil, v1.WrapErr(err)
-	}
-
-	return fromPluginToServerRegistrationEntry(resp.GetEntry()), nil
-}
-
 func (v1 *V1Alpha1) FetchRegistrationEntries(ctx context.Context, entryIDs []string) (map[string]*common.RegistrationEntry, error) {
 	resp, err := v1.DataStorePluginClient.FetchRegistrationEntries(ctx, &datastorev1.FetchRegistrationEntriesRequest{
 		EntryIds: entryIDs,

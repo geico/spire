@@ -9,7 +9,7 @@ import (
 
 const pluginName = "cassandra"
 
-// BuiltIn returns the Cassandra plugin as a built-in. 
+// BuiltIn returns the Cassandra plugin as a built-in.
 func BuiltIn() catalog.BuiltIn {
 	return builtin(ds_cassandra.NewPlugin())
 }

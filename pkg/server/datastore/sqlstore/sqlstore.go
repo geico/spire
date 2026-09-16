@@ -1778,6 +1778,7 @@ func countAttestedNodesWithFilters(ctx context.Context, db *sqlDB, _ logrus.Fiel
 
 func createAttestedNodeEvent(tx *gorm.DB, event *datastore.AttestedNodeEvent) error {
 	if err := tx.Create(&AttestedNodeEvent{
+
 		ID:       event.EventID,
 		SpiffeID: event.SpiffeID,
 	}).Error; err != nil {

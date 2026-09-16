@@ -360,7 +360,7 @@ func (s *Suite) TestInvalidAzureConfiguration() {
 	}
 	for _, testCase := range testCases {
 		s.T().Run(testCase.name, func(t *testing.T) {
-			err := s.ds.Configure(ctx, testCase.config)
+			_, err := s.ds.Configure(ctx, &configv1.ConfigureRequest{HclConfiguration: testCase.config})
 			s.RequireErrorContains(err, testCase.expectedErr)
 		})
 	}

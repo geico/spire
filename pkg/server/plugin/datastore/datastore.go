@@ -45,7 +45,6 @@ type DataStore interface {
 	CreateRegistrationEntry(context.Context, *common.RegistrationEntry) (*common.RegistrationEntry, error)
 	CreateOrReturnRegistrationEntry(context.Context, *common.RegistrationEntry) (*common.RegistrationEntry, bool, error)
 	DeleteRegistrationEntry(ctx context.Context, entryID string) (*common.RegistrationEntry, error)
-	FetchRegistrationEntry(ctx context.Context, entryID string) (*common.RegistrationEntry, error)
 	FetchRegistrationEntries(ctx context.Context, entryIDs []string) (map[string]*common.RegistrationEntry, error)
 	ListRegistrationEntries(context.Context, *ds_types.ListRegistrationEntriesRequest) (*ds_types.ListRegistrationEntriesResponse, error)
 	PruneRegistrationEntries(ctx context.Context, expiresBefore time.Time) error

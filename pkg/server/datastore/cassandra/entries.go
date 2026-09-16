@@ -456,22 +456,6 @@ func (p *Plugin) deleteRegistrationEntry(ctx context.Context, re *datastorev1.Re
 	return nil
 }
 
-func (p *Plugin) FetchRegistrationEntry(
-	ctx context.Context,
-	req *datastorev1.FetchRegistrationEntryRequest,
-) (*datastorev1.FetchRegistrationEntryResponse, error) {
-	p.log.WithField("entry_id", req.GetEntryId()).Debug("cassandra: FetchRegistrationEntry called")
-
-	entries, err := p.fetchRegistrationEntries(ctx, []string{req.EntryId})
-	if err != nil {
-		return nil, err
-	}
-
-	return &datastorev1.FetchRegistrationEntryResponse{
-		Entry: entries[req.EntryId],
-	}, nil
-}
-
 func (p *Plugin) fetchRegistrationEntries(
 	ctx context.Context,
 	entryIDs []string,
@@ -1312,16 +1296,23 @@ func (p *Plugin) UpdateRegistrationEntry(
 		return nil, err
 	}
 
-	entryResp, err := p.FetchRegistrationEntry(ctx, &datastorev1.FetchRegistrationEntryRequest{
-		EntryId: re.EntryId,
+	resp, err := p.FetchRegistrationEntries(ctx, &datastorev1.FetchRegistrationEntriesRequest{
+		EntryIds: []string{re.EntryId},
 	})
 	if err != nil {
 		return nil, newWrappedCassandraError(err)
 	}
-	if entryResp.GetEntry() == nil {
+
+	var entry *datastorev1.RegistrationEntry
+	for _, e := range resp.Entries {
+		if e.GetEntryId() == re.EntryId {
+			entry = e
+			break
+		}
+	}
+	if entry == nil {
 		return nil, status.Error(codes.NotFound, NotFoundErr.Error())
 	}
-	entry := entryResp.GetEntry()
 
 	b := p.db.session.Batch(gocql.LoggedBatch).Consistency(p.db.cfg.WriteConsistency)
 	updateQuery := qb.NewUpdate().
