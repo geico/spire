@@ -44,10 +44,16 @@ type Config struct {
 	SVIDStoreCache       *storecache.Cache
 	X509SVIDCacheMaxSize int
 	JWTSVIDCacheMaxSize  int
+	WITSVIDCacheMaxSize  int
+	EnableWITSVIDs       bool
 	DisableLRUCache      bool
 	NodeAttestor         nodeattestor.NodeAttestor
 	RotationStrategy     *rotationutil.RotationStrategy
 	TLSPolicy            tlspolicy.Policy
+
+	// LoadBalancingConfig is an optional, opaque payload used as the
+	// loadBalancingConfig field of the gRPC service config.
+	LoadBalancingConfig string
 
 	// Clk is the clock the manager will use to get time
 	Clk clock.Clock
@@ -81,6 +87,18 @@ func newManager(c *Config) *manager {
 		Clk:              c.Clk,
 	})
 
+	var witCache *managerCache.WITLRUCache
+	if c.EnableWITSVIDs {
+		witCache = managerCache.NewWITLRUCache(managerCache.WITLRUCacheConfig{
+			Log:              logger,
+			TrustDomain:      c.TrustDomain,
+			Bundle:           c.Bundle,
+			Metrics:          c.Metrics,
+			SvidCacheMaxSize: c.WITSVIDCacheMaxSize,
+			Clk:              c.Clk,
+		})
+	}
+
 	jwtCache := managerCache.NewJWTSVIDCache(logger, c.Metrics, c.JWTSVIDCacheMaxSize)
 
 	bundleCache := managerCache.NewBundleCache(c.TrustDomain, c.Bundle)
@@ -100,12 +118,15 @@ func newManager(c *Config) *manager {
 		Reattestable:     c.Reattestable,
 		RotationStrategy: c.RotationStrategy,
 		TLSPolicy:        c.TLSPolicy,
+
+		LoadBalancingConfig: c.LoadBalancingConfig,
 	}
 	svidRotator, client := svid.NewRotator(rotCfg)
 
 	m := &manager{
 		bundleCache:    bundleCache,
 		x509Cache:      x509Cache,
+		witCache:       witCache,
 		jwtCache:       jwtCache,
 		c:              c,
 		mtx:            new(sync.RWMutex),

@@ -34,6 +34,7 @@ import (
 	"github.com/spiffe/spire/pkg/common/catalog"
 	common_cli "github.com/spiffe/spire/pkg/common/cli"
 	"github.com/spiffe/spire/pkg/common/config"
+	"github.com/spiffe/spire/pkg/common/errorutil"
 	"github.com/spiffe/spire/pkg/common/fflag"
 	"github.com/spiffe/spire/pkg/common/health"
 	"github.com/spiffe/spire/pkg/common/idutil"
@@ -68,36 +69,37 @@ type Config struct {
 }
 
 type agentConfig struct {
-	DataDir                       string    `hcl:"data_dir"`
-	AdminSocketPath               string    `hcl:"admin_socket_path"`
-	InsecureBootstrap             bool      `hcl:"insecure_bootstrap"`
-	RebootstrapMode               string    `hcl:"rebootstrap_mode"`
-	RebootstrapDelay              string    `hcl:"rebootstrap_delay"`
-	JoinToken                     string    `hcl:"join_token"`
-	JoinTokenFile                 string    `hcl:"join_token_file"`
-	LogFile                       string    `hcl:"log_file"`
-	LogFormat                     string    `hcl:"log_format"`
-	LogLevel                      string    `hcl:"log_level"`
-	LogSelectors                  []string  `hcl:"log_selectors"`
-	LogSourceLocation             bool      `hcl:"log_source_location"`
-	SDS                           sdsConfig `hcl:"sds"`
-	ServerAddress                 string    `hcl:"server_address"`
-	ServerPort                    int       `hcl:"server_port"`
-	SocketPath                    string    `hcl:"socket_path"`
-	DisableWorkloadAPI            bool      `hcl:"disable_workload_api"`
-	DisableSDSAPI                 bool      `hcl:"disable_sds_api"`
-	WorkloadX509SVIDKeyType       string    `hcl:"workload_x509_svid_key_type"`
-	TrustBundleFormat             string    `hcl:"trust_bundle_format"`
-	TrustBundlePath               string    `hcl:"trust_bundle_path"`
-	TrustBundleSpiffeWorkloadAPI  string    `hcl:"trust_bundle_spiffe_workload_api"`
-	TrustBundleUnixSocket         string    `hcl:"trust_bundle_unix_socket"`
-	TrustBundleURL                string    `hcl:"trust_bundle_url"`
-	TrustDomain                   string    `hcl:"trust_domain"`
-	AllowUnauthenticatedVerifiers bool      `hcl:"allow_unauthenticated_verifiers"`
-	AllowedForeignJWTClaims       []string  `hcl:"allowed_foreign_jwt_claims"`
-	AvailabilityTarget            string    `hcl:"availability_target"`
-	X509SVIDCacheMaxSize          int       `hcl:"x509_svid_cache_max_size"`
-	JWTSVIDCacheMaxSize           int       `hcl:"jwt_svid_cache_max_size"`
+	DataDir                       string              `hcl:"data_dir"`
+	AdminSocketPath               string              `hcl:"admin_socket_path"`
+	InsecureBootstrap             bool                `hcl:"insecure_bootstrap"`
+	RebootstrapMode               string              `hcl:"rebootstrap_mode"`
+	RebootstrapDelay              string              `hcl:"rebootstrap_delay"`
+	JoinToken                     string              `hcl:"join_token"`
+	JoinTokenFile                 string              `hcl:"join_token_file"`
+	LogFile                       string              `hcl:"log_file"`
+	LogFileRotation               *log.RotationConfig `hcl:"log_file_rotation"`
+	LogFormat                     string              `hcl:"log_format"`
+	LogLevel                      string              `hcl:"log_level"`
+	LogSelectors                  []string            `hcl:"log_selectors"`
+	LogSourceLocation             bool                `hcl:"log_source_location"`
+	SDS                           sdsConfig           `hcl:"sds"`
+	ServerAddress                 string              `hcl:"server_address"`
+	ServerPort                    int                 `hcl:"server_port"`
+	SocketPath                    string              `hcl:"socket_path"`
+	DisableWorkloadAPI            bool                `hcl:"disable_workload_api"`
+	DisableSDSAPI                 bool                `hcl:"disable_sds_api"`
+	WorkloadX509SVIDKeyType       string              `hcl:"workload_x509_svid_key_type"`
+	TrustBundleFormat             string              `hcl:"trust_bundle_format"`
+	TrustBundlePath               string              `hcl:"trust_bundle_path"`
+	TrustBundleSpiffeWorkloadAPI  string              `hcl:"trust_bundle_spiffe_workload_api"`
+	TrustBundleUnixSocket         string              `hcl:"trust_bundle_unix_socket"`
+	TrustBundleURL                string              `hcl:"trust_bundle_url"`
+	TrustDomain                   string              `hcl:"trust_domain"`
+	AllowUnauthenticatedVerifiers bool                `hcl:"allow_unauthenticated_verifiers"`
+	AllowedForeignJWTClaims       []string            `hcl:"allowed_foreign_jwt_claims"`
+	AvailabilityTarget            string              `hcl:"availability_target"`
+	X509SVIDCacheMaxSize          int                 `hcl:"x509_svid_cache_max_size"`
+	JWTSVIDCacheMaxSize           int                 `hcl:"jwt_svid_cache_max_size"`
 
 	AuthorizedDelegates []string `hcl:"authorized_delegates"`
 
@@ -241,6 +243,8 @@ type workloadAPIRateLimitConfig struct {
 	FetchJWTSVID     *int `hcl:"fetch_jwt_svid"`
 	FetchX509Bundles *int `hcl:"fetch_x509_bundles"`
 	FetchJWTBundles  *int `hcl:"fetch_jwt_bundles"`
+	FetchWITSVID     *int `hcl:"fetch_wit_svid"`
+	FetchWITBundles  *int `hcl:"fetch_wit_bundles"`
 	StreamSecrets    *int `hcl:"stream_secrets"`
 	FetchSecrets     *int `hcl:"fetch_secrets"`
 
@@ -248,13 +252,16 @@ type workloadAPIRateLimitConfig struct {
 }
 
 type experimentalConfig struct {
-	SyncInterval           string `hcl:"sync_interval"`
-	JWTSVIDCacheHitTimeout string `hcl:"jwt_svid_cache_hit_timeout"`
-	RPCTimeout             string `hcl:"rpc_timeout"`
-	MaxBundleWorkers       int    `hcl:"max_bundle_workers"`
-	NamedPipeName          string `hcl:"named_pipe_name"`
-	AdminNamedPipeName     string `hcl:"admin_named_pipe_name"`
-	RequirePQKEM           bool   `hcl:"require_pq_kem"`
+	SyncInterval              string `hcl:"sync_interval"`
+	JWTSVIDCacheHitTimeout    string `hcl:"jwt_svid_cache_hit_timeout"`
+	RPCTimeout                string `hcl:"rpc_timeout"`
+	MaxBundleWorkers          int    `hcl:"max_bundle_workers"`
+	NamedPipeName             string `hcl:"named_pipe_name"`
+	AdminNamedPipeName        string `hcl:"admin_named_pipe_name"`
+	RequirePQKEM              bool   `hcl:"require_pq_kem"`
+	ServerLoadBalancingConfig string `hcl:"server_load_balancing_config"`
+	EnableWITSVIDs            bool   `hcl:"enable_wit_svids"`
+	WITSVIDCacheMaxSize       int    `hcl:"wit_svid_cache_max_size"`
 
 	RateLimit workloadAPIRateLimitConfig `hcl:"ratelimit"`
 
@@ -360,7 +367,7 @@ func (cmd *Command) Run(args []string) int {
 	defer stop()
 
 	err = a.Run(ctx)
-	if err != nil && !errors.Is(err, context.Canceled) {
+	if err != nil && !errorutil.IsCanceled(err) {
 		c.Log.WithError(err).Error("Agent crashed")
 		return 1
 	}
@@ -393,6 +400,15 @@ func (c *agentConfig) validate() error {
 
 	if c.TrustDomain == "" {
 		return errors.New("trust_domain must be configured")
+	}
+
+	if c.LogFileRotation != nil {
+		if c.LogFile == "" {
+			return errors.New("log_file must be configured to use log_file_rotation")
+		}
+		if err := c.LogFileRotation.Validate(); err != nil {
+			return fmt.Errorf("invalid log_file_rotation configuration: %w", err)
+		}
 	}
 
 	// If insecure_bootstrap is set, trust_bundle_path, trust_bundle_url, or trust_bundle_spiffe_workload_api cannot be set
@@ -611,6 +627,11 @@ func newAgentConfig(c *Config, logOptions []log.Option, allowUnknownConfig, skip
 	serverHostPort := net.JoinHostPort(c.Agent.ServerAddress, strconv.Itoa(c.Agent.ServerPort))
 	ac.ServerAddress = fmt.Sprintf("dns:///%s", serverHostPort)
 
+	if err := client.ValidateLoadBalancingConfig(c.Agent.Experimental.ServerLoadBalancingConfig); err != nil {
+		return nil, fmt.Errorf("invalid server_load_balancing_config: %w", err)
+	}
+	ac.ServerLoadBalancingConfig = c.Agent.Experimental.ServerLoadBalancingConfig
+
 	logOptions = append(logOptions,
 		log.WithLevel(c.Agent.LogLevel),
 		log.WithFormat(c.Agent.LogFormat),
@@ -618,10 +639,10 @@ func newAgentConfig(c *Config, logOptions []log.Option, allowUnknownConfig, skip
 	if c.Agent.LogSourceLocation {
 		logOptions = append(logOptions, log.WithSourceLocation())
 	}
-	var reopenableFile *log.ReopenableFile
+	var reopenableFile log.ReopenableWriteCloser
 	if c.Agent.LogFile != "" && !skipLogFile {
 		var err error
-		reopenableFile, err = log.NewReopenableFile(c.Agent.LogFile)
+		reopenableFile, err = log.NewOutputFile(c.Agent.LogFile, c.Agent.LogFileRotation)
 		if err != nil {
 			return nil, err
 		}
@@ -633,6 +654,7 @@ func newAgentConfig(c *Config, logOptions []log.Option, allowUnknownConfig, skip
 		return nil, fmt.Errorf("could not start logger: %w", err)
 	}
 	ac.Log = logger
+
 	if reopenableFile != nil {
 		ac.LogReopener = log.ReopenOnSignal(logger, reopenableFile)
 	}
@@ -682,6 +704,20 @@ func newAgentConfig(c *Config, logOptions []log.Option, allowUnknownConfig, skip
 		return nil, errors.New("jwt_svid_cache_max_size should not be negative")
 	}
 	ac.JWTSVIDCacheMaxSize = c.Agent.JWTSVIDCacheMaxSize
+
+	if c.Agent.Experimental.WITSVIDCacheMaxSize < 0 {
+		return nil, errors.New("experimental.wit_svid_cache_max_size should not be negative")
+	}
+	ac.WITSVIDCacheMaxSize = c.Agent.Experimental.WITSVIDCacheMaxSize
+
+	// WIT-SVIDs need both the feature flag and the experimental config option
+	// while the profile is under development.
+	if c.Agent.Experimental.EnableWITSVIDs {
+		ac.EnableWITSVIDs = fflag.IsSet(fflag.FlagWITSVID)
+		if !ac.EnableWITSVIDs {
+			logger.Warnf("The experimental.enable_wit_svids configuration requires the %q feature flag; WIT-SVIDs remain disabled", fflag.FlagWITSVID)
+		}
+	}
 
 	td, err := common_cli.ParseTrustDomain(c.Agent.TrustDomain, logger)
 	if err != nil {
@@ -857,6 +893,8 @@ func newAgentConfig(c *Config, logOptions []log.Option, allowUnknownConfig, skip
 		FetchJWTSVID:     intVal(c.Agent.Experimental.RateLimit.FetchJWTSVID),
 		FetchX509Bundles: intVal(c.Agent.Experimental.RateLimit.FetchX509Bundles),
 		FetchJWTBundles:  intVal(c.Agent.Experimental.RateLimit.FetchJWTBundles),
+		FetchWITSVID:     intVal(c.Agent.Experimental.RateLimit.FetchWITSVID),
+		FetchWITBundles:  intVal(c.Agent.Experimental.RateLimit.FetchWITBundles),
 		StreamSecrets:    intVal(c.Agent.Experimental.RateLimit.StreamSecrets),
 		FetchSecrets:     intVal(c.Agent.Experimental.RateLimit.FetchSecrets),
 	}
@@ -871,6 +909,12 @@ func newAgentConfig(c *Config, logOptions []log.Option, allowUnknownConfig, skip
 	}
 	if ac.WorkloadAPIRateLimit.FetchJWTBundles < 0 {
 		return nil, errors.New("experimental.ratelimit.fetch_jwt_bundles must not be negative")
+	}
+	if ac.WorkloadAPIRateLimit.FetchWITSVID < 0 {
+		return nil, errors.New("experimental.ratelimit.fetch_wit_svid must not be negative")
+	}
+	if ac.WorkloadAPIRateLimit.FetchWITBundles < 0 {
+		return nil, errors.New("experimental.ratelimit.fetch_wit_bundles must not be negative")
 	}
 	if ac.WorkloadAPIRateLimit.StreamSecrets < 0 {
 		return nil, errors.New("experimental.ratelimit.stream_secrets must not be negative")
@@ -919,6 +963,10 @@ func checkForUnknownConfig(c *Config, l logrus.FieldLogger) (err error) {
 
 	if a := c.Agent; a != nil && len(a.UnusedKeyPositions) != 0 {
 		detectedUnknown("agent", a.UnusedKeyPositions)
+	}
+
+	if a := c.Agent; a != nil && a.LogFileRotation != nil && len(a.LogFileRotation.UnusedKeyPositions) != 0 {
+		detectedUnknown("log_file_rotation", a.LogFileRotation.UnusedKeyPositions)
 	}
 
 	if a := c.Agent; a != nil && a.Experimental.Broker != nil {

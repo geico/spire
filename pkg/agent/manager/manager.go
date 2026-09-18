@@ -40,6 +40,10 @@ const (
 	defaultSyncInterval = 5 * time.Second
 )
 
+// ErrWITSVIDsDisabled is returned by WIT-SVID related operations when the
+// manager was not configured to enable WIT-SVIDs.
+var ErrWITSVIDsDisabled = errors.New("WIT-SVIDs are not enabled")
+
 // Manager provides cache management functionalities for agents.
 type Manager interface {
 	// Initialize initializes the manager.
@@ -48,9 +52,14 @@ type Manager interface {
 	// Run runs the manager. It will block until the context is cancelled.
 	Run(ctx context.Context) error
 
-	// SubscribeToCacheChanges returns a Subscriber on which cache entry updates are sent
+	// SubscribeToX509CacheChanges returns a Subscriber on which cache entry updates are sent
 	// for a particular set of selectors.
-	SubscribeToCacheChanges(ctx context.Context, key cache.Selectors) (cache.Subscriber[cache.X509WorkloadUpdate], error)
+	SubscribeToX509CacheChanges(ctx context.Context, key cache.Selectors) (cache.Subscriber[cache.X509WorkloadUpdate], error)
+
+	// SubscribeToWITCacheChanges returns a Subscriber on which cache entry updates are sent
+	// for a particular set of selectors. It fails with ErrWITSVIDsDisabled if WIT-SVIDs are
+	// not enabled.
+	SubscribeToWITCacheChanges(ctx context.Context, key cache.Selectors) (cache.Subscriber[cache.WITWorkloadUpdate], error)
 
 	// SubscribeToSVIDChanges returns a new observer.Stream on which svid.State instances are received
 	// each time an SVID rotation finishes.
@@ -113,17 +122,25 @@ type manager struct {
 
 	bundleCache *cache.BundleCache
 	x509Cache   *cache.X509SVIDLRUCache
-	jwtCache    *cache.JWTSVIDCache
-	svid        svid.Rotator
+	// witCache is nil unless WIT-SVIDs are enabled
+	witCache *cache.WITLRUCache
+	jwtCache *cache.JWTSVIDCache
+	svid     svid.Rotator
 
 	storage storage.Storage
 
 	// synchronizeBackoff calculator for fetch interval, backing off if error is returned on
 	// fetch attempt
 	synchronizeBackoff backoff.BackOff
-	svidSyncBackoff    backoff.BackOff
+	// X509 and WIT SVID minting use independent retry schedules so failures in
+	// the optional WIT profile do not delay X509-SVID issuance.
+	x509SVIDSyncBackoff backoff.BackOff
+	witSVIDSyncBackoff  backoff.BackOff
 	// csrSizeLimitedBackoff backs off the number of csrs if error is returned on fetch svid attempt
 	csrSizeLimitedBackoff backoff.SizeLimitedBackOff
+	// witSizeLimitedBackoff backs off the number of WIT-SVIDs requested at once if an error
+	// is returned on a fetch attempt
+	witSizeLimitedBackoff backoff.SizeLimitedBackOff
 
 	client client.Client
 
@@ -159,8 +176,12 @@ func (m *manager) Initialize(ctx context.Context) error {
 	synchronizeBackoffMaxInterval := min(synchronizeMaxInterval, synchronizeMaxIntervalMultiple*m.c.SyncInterval)
 
 	m.synchronizeBackoff = backoff.NewBackoff(m.clk, m.c.SyncInterval, backoff.WithMaxInterval(synchronizeBackoffMaxInterval))
-	m.svidSyncBackoff = backoff.NewBackoff(m.clk, cache.SVIDSyncInterval, backoff.WithMaxInterval(maxSVIDSyncInterval))
+	m.x509SVIDSyncBackoff = backoff.NewBackoff(m.clk, cache.SVIDSyncInterval, backoff.WithMaxInterval(maxSVIDSyncInterval))
+	if m.witCache != nil {
+		m.witSVIDSyncBackoff = backoff.NewBackoff(m.clk, cache.SVIDSyncInterval, backoff.WithMaxInterval(maxSVIDSyncInterval))
+	}
 	m.csrSizeLimitedBackoff = backoff.NewSizeLimitedBackOff(limits.SignLimitPerIP)
+	m.witSizeLimitedBackoff = backoff.NewSizeLimitedBackOff(limits.SignLimitPerIP)
 	m.syncedEntries = make(map[string]*common.RegistrationEntry)
 	m.syncedBundles = make(map[string]*common.Bundle)
 
@@ -171,6 +192,13 @@ func (m *manager) Initialize(ctx context.Context) error {
 	}
 
 	err := m.synchronize(ctx)
+	if err == nil && m.witCache != nil {
+		// WIT-SVIDs are optional. Attempt the initial mint so they are available
+		// immediately, but leave failures to the independent WIT retry loop.
+		if witErr := m.syncWITSVIDs(ctx); witErr != nil {
+			m.c.Log.WithError(witErr).Error("WIT-SVID sync failed")
+		}
+	}
 	if nodeutil.ShouldAgentReattest(err) {
 		m.c.Log.WithError(err).Error("Agent needs to re-attest: removing SVID and shutting down")
 		m.deleteSVID()
@@ -186,12 +214,17 @@ func (m *manager) Run(ctx context.Context) error {
 	defer m.client.Release()
 
 	for {
-		err := util.RunTasks(ctx,
+		tasks := []func(context.Context) error{
 			m.runSynchronizer,
-			m.runSyncSVIDs,
+			m.runSyncX509SVIDs,
 			m.runSVIDObserver,
 			m.runBundleObserver,
-			m.svid.Run)
+			m.svid.Run,
+		}
+		if m.witCache != nil {
+			tasks = append(tasks, m.runSyncWITSVIDs)
+		}
+		err := util.RunTasks(ctx, tasks...)
 
 		switch {
 		case err == nil || errors.Is(err, context.Canceled) || errorutil.IsSIGINTOrSIGTERMError(err):
@@ -216,8 +249,15 @@ func (m *manager) Run(ctx context.Context) error {
 	}
 }
 
-func (m *manager) SubscribeToCacheChanges(ctx context.Context, selectors cache.Selectors) (cache.Subscriber[cache.X509WorkloadUpdate], error) {
+func (m *manager) SubscribeToX509CacheChanges(ctx context.Context, selectors cache.Selectors) (cache.Subscriber[cache.X509WorkloadUpdate], error) {
 	return m.x509Cache.SubscribeToWorkloadUpdates(ctx, selectors)
+}
+
+func (m *manager) SubscribeToWITCacheChanges(ctx context.Context, selectors cache.Selectors) (cache.Subscriber[cache.WITWorkloadUpdate], error) {
+	if m.witCache == nil {
+		return nil, ErrWITSVIDsDisabled
+	}
+	return m.witCache.SubscribeToWorkloadUpdates(ctx, selectors)
 }
 
 func (m *manager) SubscribeToSVIDChanges() observer.Stream {
@@ -367,21 +407,40 @@ func (m *manager) runSynchronizer(ctx context.Context) error {
 	}
 }
 
-func (m *manager) runSyncSVIDs(ctx context.Context) error {
+func (m *manager) runSyncX509SVIDs(ctx context.Context) error {
 	for {
 		select {
-		case <-m.clk.After(m.svidSyncBackoff.NextBackOff()):
+		case <-m.clk.After(m.x509SVIDSyncBackoff.NextBackOff()):
 		case <-ctx.Done():
 			return nil
 		}
 
-		err := m.syncSVIDs(ctx)
+		err := m.syncX509SVIDs(ctx)
 		switch {
 		case err != nil:
 			// Just log the error and wait for next synchronization
 			m.c.Log.WithError(err).Error("SVID sync failed")
 		default:
-			m.svidSyncBackoff.Reset()
+			m.x509SVIDSyncBackoff.Reset()
+		}
+	}
+}
+
+func (m *manager) runSyncWITSVIDs(ctx context.Context) error {
+	for {
+		select {
+		case <-m.clk.After(m.witSVIDSyncBackoff.NextBackOff()):
+		case <-ctx.Done():
+			return nil
+		}
+
+		err := m.syncWITSVIDs(ctx)
+		switch {
+		case err != nil:
+			// Just log the error and wait for next synchronization
+			m.c.Log.WithError(err).Error("WIT-SVID sync failed")
+		default:
+			m.witSVIDSyncBackoff.Reset()
 		}
 	}
 }

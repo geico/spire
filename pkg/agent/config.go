@@ -77,6 +77,11 @@ type Config struct {
 	// Address of SPIRE server
 	ServerAddress string
 
+	// ServerLoadBalancingConfig is an opaque payload used as the
+	// loadBalancingConfig field of the gRPC service config used to connect to
+	// the SPIRE server. If empty, round robin load balancing is used.
+	ServerLoadBalancingConfig string
+
 	// SVID key type
 	WorkloadKeyType workloadkey.KeyType
 
@@ -88,6 +93,12 @@ type Config struct {
 
 	// JWTSVIDCacheMaxSize is a soft limit of max number of JWT-SVIDs that would be stored in cache
 	JWTSVIDCacheMaxSize int
+
+	// WITSVIDCacheMaxSize is a soft limit of max number of WIT-SVIDs that would be stored in cache
+	WITSVIDCacheMaxSize int
+
+	// EnableWITSVIDs controls whether WIT-SVIDs are minted and served
+	EnableWITSVIDs bool
 
 	// Trust domain and associated CA bundle
 	TrustDomain spiffeid.TrustDomain

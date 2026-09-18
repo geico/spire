@@ -443,6 +443,7 @@ func (a *Agent) attest(ctx context.Context, sto storage.Storage, cat catalog.Cat
 		ServerAddress:        a.c.ServerAddress,
 		NodeAttestor:         na,
 		TLSPolicy:            a.c.TLSPolicy,
+		LoadBalancingConfig:  a.c.ServerLoadBalancingConfig,
 	}
 	return node_attestor.New(&config).Attest(ctx)
 }
@@ -470,10 +471,13 @@ func (a *Agent) newManager(ctx context.Context, sto storage.Storage, cat catalog
 		SyncInterval:         a.c.SyncInterval,
 		X509SVIDCacheMaxSize: a.c.X509SVIDCacheMaxSize,
 		JWTSVIDCacheMaxSize:  a.c.JWTSVIDCacheMaxSize,
+		WITSVIDCacheMaxSize:  a.c.WITSVIDCacheMaxSize,
+		EnableWITSVIDs:       a.c.EnableWITSVIDs,
 		SVIDStoreCache:       cache,
 		NodeAttestor:         na,
 		RotationStrategy:     rotationutil.NewRotationStrategy(a.c.AvailabilityTarget),
 		TLSPolicy:            a.c.TLSPolicy,
+		LoadBalancingConfig:  a.c.ServerLoadBalancingConfig,
 	}
 
 	mgr := manager.New(config)
