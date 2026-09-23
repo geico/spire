@@ -568,300 +568,6 @@ func (p *Plugin) FetchRegistrationEntries(
 	}, nil
 }
 
-type queryTerm struct {
-	field              string
-	operator           string
-	values             []any
-	deepValues         [][]any
-	requireDistinct    bool
-	includeExtraColumn bool
-}
-
-func (p *Plugin) listRegistrationEntriesOld(ctx context.Context, req *datastorev1.ListRegistrationEntriesRequest) (*datastorev1.ListRegistrationEntriesResponse, error) {
-	selectBuilder := qb.NewSelect().
-		From("registered_entries").
-		Column("created_at").
-		Column("updated_at").
-		Column("entry_id").
-		Column("spiffe_id").
-		Column("parent_id").
-		Column("ttl").
-		Column("admin").
-		Column("downstream").
-		Column("expiry").
-		Column("revision_number").
-		Column("store_svid").
-		Column("hint").
-		Column("jwt_svid_ttl").
-		Column("dns_names").
-		Column("federated_trust_domains").
-		Column("selector_types").
-		Column("selector_values").
-		Column("additional_attributes")
-
-	collapseToPartitionRow := true
-	onlyFiltersStaticCols := true
-	terms := []queryTerm{}
-	if len(req.ByParentId) > 0 {
-		terms = append(terms, queryTerm{
-			field:    "parent_id",
-			operator: "=",
-			values:   []any{req.ByParentId},
-		})
-
-		selectBuilder.Where("parent_id", qb.Equals(req.ByParentId))
-	}
-
-	if len(req.BySpiffeId) > 0 {
-		terms = append(terms, queryTerm{
-			field:    "spiffe_id",
-			operator: "=",
-			values:   []any{req.BySpiffeId},
-		})
-
-		selectBuilder.Where("spiffe_id", qb.Equals(req.BySpiffeId))
-	}
-
-	if req.FilterByDownstream {
-		terms = append(terms, queryTerm{
-			field:    "downstream",
-			operator: "=",
-			values:   []any{req.DownstreamValue},
-		})
-
-		selectBuilder.Where("downstream", qb.Equals(req.DownstreamValue))
-	}
-
-	if len(req.ByHint) > 0 {
-		terms = append(terms, queryTerm{
-			field:    "hint",
-			operator: "=",
-			values:   []any{req.ByHint},
-		})
-		selectBuilder.Where("hint", qb.Equals(req.ByHint))
-	}
-
-	if req.ByFederatesWith != nil || req.BySelectors != nil {
-		indexes := generateSearchIndexesForRequest(req)
-		terms = append(terms, indexes...)
-		// TODO(tjons): this has to be temp
-
-		for _, idx := range indexes {
-			if idx.operator == "IN" {
-				collapseToPartitionRow = false
-			}
-		}
-	}
-
-	addDistinctionColumn := false
-	b := strings.Builder{}
-	b.WriteString(`
-		SELECT
-			created_at,
-			updated_at,
-			entry_id,
-			spiffe_id,
-			parent_id,
-			ttl,
-			admin,
-			downstream,
-			expiry,
-			revision_number,
-			store_svid,
-			hint,
-			jwt_svid_ttl,
-			dns_names,
-			federated_trust_domains,
-			selector_types,
-			selector_values,
-			additional_attributes
-		FROM registered_entries  
-	`)
-	if collapseToPartitionRow {
-		// b.WriteString(" unrolled_selector_type_val = '' AND unrolled_ftd = '' ") // no filtering at all, get all entries but limit this to the empty row for paging
-		// if len(terms) > 0 {
-		// 	b.WriteString(" AND ")
-		// }
-		// needsDistinct = true
-	}
-
-	args := make([]any, 0, len(terms))
-	if len(terms) > 0 {
-		b.WriteString("WHERE ")
-
-		for i, term := range terms {
-			if i > 0 {
-				b.WriteString(" AND ")
-			}
-			b.WriteString(term.field)
-			b.WriteString(" ")
-			b.WriteString(term.operator)
-
-			if term.operator == "IN" {
-				if !addDistinctionColumn {
-					addDistinctionColumn = term.includeExtraColumn
-					onlyFiltersStaticCols = false
-				}
-
-				if term.requireDistinct {
-					onlyFiltersStaticCols = true
-				}
-				// TODO(tjons): the logic in here is actually kinda dangerous
-				if len(term.deepValues) > 0 {
-					b.WriteString(" (")
-					b.WriteString(strings.TrimRight(strings.Repeat(" ?,", len(term.deepValues)), ","))
-					b.WriteString(")")
-					for _, dv := range term.deepValues {
-						args = append(args, dv)
-					}
-					continue
-				}
-
-				b.WriteString(" (")
-				b.WriteString(strings.TrimRight(strings.Repeat(" ?,", len(term.values)), ","))
-				b.WriteString(")")
-			} else {
-				b.WriteString(" ?")
-			}
-
-			args = append(args, term.values...)
-		}
-	}
-
-	b.WriteString(" ALLOW FILTERING")
-
-	query := b.String()
-	if !addDistinctionColumn {
-		query = strings.Replace(query, "updated_at,", "", 1)
-	}
-
-	if onlyFiltersStaticCols {
-		query = strings.Replace(query, "SELECT", "SELECT DISTINCT", 1)
-	}
-
-	cqlQuery := p.db.session.Query(query, args...).Consistency(p.db.cfg.ReadConsistency)
-	p.log.WithField("query", query).Debug("cassandra: ListRegistrationEntries executing query")
-
-	if req.Pagination != nil {
-		cqlQuery.PageSize(int(req.Pagination.PageSize))
-
-		if len(req.Pagination.PageToken) > 0 {
-			cqlQuery = cqlQuery.PageState([]byte(req.Pagination.PageToken))
-		} else {
-			cqlQuery = cqlQuery.PageState(nil)
-		}
-	} else {
-		cqlQuery.PageSize(1000) // effectively no limit
-	}
-
-	iter := cqlQuery.IterContext(ctx)
-	entryMap := make(map[string]*datastorev1.RegistrationEntry, iter.NumRows())
-	scanner := iter.Scanner()
-
-	for scanner.Next() {
-		var (
-			result                        = new(datastorev1.RegistrationEntry)
-			selectorTypes, selectorValues []string
-			aas                           = make([]byte, 0)
-			err                           error
-		)
-
-		if !addDistinctionColumn {
-			err = scanner.Scan(
-				&result.CreatedAt,
-				&result.EntryId,
-				&result.SpiffeId,
-				&result.ParentId,
-				&result.X509SvidTtl,
-				&result.Admin,
-				&result.Downstream,
-				&result.EntryExpiry,
-				&result.RevisionNumber,
-				&result.StoreSvid,
-				&result.Hint,
-				&result.JwtSvidTtl,
-				&result.DnsNames,
-				&result.FederatesWith,
-				&selectorTypes,
-				&selectorValues,
-				&aas,
-			)
-		} else {
-			err = scanner.Scan(
-				&result.CreatedAt,
-				&result.UpdatedAt,
-				&result.EntryId,
-				&result.SpiffeId,
-				&result.ParentId,
-				&result.X509SvidTtl,
-				&result.Admin,
-				&result.Downstream,
-				&result.EntryExpiry,
-				&result.RevisionNumber,
-				&result.StoreSvid,
-				&result.Hint,
-				&result.JwtSvidTtl,
-				&result.DnsNames,
-				&result.FederatesWith,
-				&selectorTypes,
-				&selectorValues,
-				&aas,
-			)
-		}
-		if err != nil {
-			return nil, newWrappedCassandraError(err)
-		}
-
-		for i := range selectorTypes {
-			selector := &datastorev1.Selector{
-				Type:  selectorTypes[i],
-				Value: selectorValues[i],
-			}
-			result.Selectors = append(result.Selectors, selector)
-		}
-
-		if len(aas) > 0 {
-			err = proto.Unmarshal(aas, result.AdditionalAttributes)
-			if err != nil {
-				return nil, newWrappedCassandraError(err)
-			}
-		}
-
-		entryMap[result.EntryId] = result
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, newWrappedCassandraError(err)
-	}
-	pageState := iter.PageState()
-	p.log.WithField("result_count", len(entryMap)).Debug("cassandra: ListRegistrationEntries scan complete")
-
-	r := &datastorev1.ListRegistrationEntriesResponse{
-		Entries: slices.Collect(maps.Values(entryMap)),
-	}
-
-	if req.Pagination != nil {
-		r.Pagination = &datastorev1.Pagination{
-			PageSize: req.Pagination.PageSize,
-		}
-
-		// go ahead and "peek"	if there is a next page...
-		peeker := p.db.session.Query(query, args...).Consistency(p.db.cfg.ReadConsistency)
-
-		peeker.PageState(pageState)
-		peeker.PageSize(1)                  // I hate all this and i think it would be better if we just dropped the silly next pagination requirement for cassandra
-		peekIter := peeker.IterContext(ctx) // at a minimum, we should feature flag this
-		if peekIter.NumRows() > 0 {
-			r.Pagination.PageToken = base64.URLEncoding.Strict().EncodeToString(pageState)
-		}
-		if err := peekIter.Close(); err != nil {
-			return nil, newWrappedCassandraError(err)
-		}
-	}
-
-	return r, nil
-}
-
 func (p *Plugin) ListRegistrationEntries(
 	ctx context.Context,
 	req *datastorev1.ListRegistrationEntriesRequest,
@@ -889,9 +595,7 @@ func (p *Plugin) ListRegistrationEntries(
 		return nil, status.Error(codes.InvalidArgument, "cannot list by empty selector set")
 	}
 
-	return p.listRegistrationEntriesNew(ctx, req)
-
-	// return p.listRegistrationEntriesOld(ctx, req)
+	return p.listRegistrationEntries(ctx, req)
 }
 
 func filterByFederatesWith(req *datastorev1.ListRegistrationEntriesRequest, result *datastorev1.RegistrationEntry) bool {
@@ -1036,7 +740,7 @@ func filterBySelectors(req *datastorev1.BySelectors, result interface {
 	return false
 }
 
-func (p *Plugin) listRegistrationEntriesNew(
+func (p *Plugin) listRegistrationEntries(
 	ctx context.Context,
 	req *datastorev1.ListRegistrationEntriesRequest,
 ) (resp *datastorev1.ListRegistrationEntriesResponse, err error) {
@@ -1066,6 +770,9 @@ func (p *Plugin) listRegistrationEntriesNew(
 	cqlQuery := p.db.session.Query(cqlStmt, q.QueryValues()...).Consistency(p.db.cfg.ReadConsistency)
 	p.log.WithField("query", cqlStmt).Debug("cassandra: ListRegistrationEntries executing query")
 
+	// We apply pagination here, if the caller has set it. If the caller has not set pagination,
+	// we rely on gocql's default behavior for pagination, which will automatically handle paging
+	// through results and fetching a new page as needed.
 	if req.Pagination != nil {
 		cqlQuery.PageSize(int(req.Pagination.PageSize))
 
@@ -1074,10 +781,6 @@ func (p *Plugin) listRegistrationEntriesNew(
 		} else {
 			cqlQuery = cqlQuery.PageState(nil)
 		}
-	} else {
-		// i'm going to try to drop this and instead use the iterator to move through "short" reads
-		// TODO(tjons): make this value configurable
-		cqlQuery.PageSize(1000)
 	}
 
 	iter := cqlQuery.IterContext(ctx)
@@ -1201,7 +904,8 @@ func (p *Plugin) PruneRegistrationEntries(
 
 	selectPruneQuery := qb.NewSelect().
 		From("registered_entries").
-		Columns([]string{"entry_id", "spiffe_id", "parent_id", "federated_trust_domains", "expiry"})
+		Columns([]string{"entry_id", "spiffe_id", "parent_id", "federated_trust_domains", "expiry"}).
+		PerPartitionLimit(1)
 
 	query := p.db.ReadQuery(selectPruneQuery).Consistency(p.db.cfg.ReadConsistency)
 	iter := query.IterContext(ctx)
@@ -1467,9 +1171,7 @@ func (p *Plugin) UpdateRegistrationEntry(
 	updateQuery.Where("unrolled_ftd", qb.Equals(""))
 	updateQuery.Where("unrolled_selector_type_val", qb.Equals(""))
 
-	q, _ := updateQuery.Build()
-	b.Query(q, updateQuery.QueryValues()...)
-
+	b.Query(updateQuery.ToCQL(), updateQuery.QueryValues()...)
 	if err := b.ExecContext(ctx); err != nil {
 		return nil, newWrappedCassandraError(err)
 	}
