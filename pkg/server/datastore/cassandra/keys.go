@@ -13,6 +13,8 @@ import (
 
 // Effectively a 1:1 copy from pkg/server/datastore/sqlstore/sqlstore.go:1451
 func (p *Plugin) TaintX509CA(ctx context.Context, req *datastorev1.TaintX509CARequest) (*datastorev1.TaintX509CAResponse, error) {
+	p.log.WithField("key_id", req.GetKeyId()).Debug("cassandra: TaintX509CA called")
+
 	bundleResp, err := p.FetchBundle(ctx, &datastorev1.FetchBundleRequest{TrustDomain: req.TrustDomain})
 	if err != nil {
 		return nil, err
@@ -64,6 +66,8 @@ func (p *Plugin) TaintX509CA(ctx context.Context, req *datastorev1.TaintX509CARe
 
 // Effectively a 1:1 copy from pkg/server/datastore/sqlstore/sqlstore.go:1488
 func (p *Plugin) RevokeX509CA(ctx context.Context, req *datastorev1.RevokeX509CARequest) (*datastorev1.RevokeX509CAResponse, error) {
+	p.log.WithField("key_id", req.GetKeyId()).Debug("cassandra: RevokeX509CA called")
+
 	bundleResp, err := p.FetchBundle(ctx, &datastorev1.FetchBundleRequest{
 		TrustDomain: req.TrustDomain,
 	})
@@ -122,6 +126,8 @@ func (p *Plugin) RevokeX509CA(ctx context.Context, req *datastorev1.RevokeX509CA
 
 // Effectively a 1:1 copy from pkg/server/datastore/sqlstore/sqlstore.go:1527
 func (p *Plugin) TaintJWTKey(ctx context.Context, req *datastorev1.TaintJWTKeyRequest) (*datastorev1.TaintJWTKeyResponse, error) {
+	p.log.WithField("authority_id", req.GetAuthorityId()).Debug("cassandra: TaintJWTKey called")
+
 	bundleResp, err := p.FetchBundle(ctx, &datastorev1.FetchBundleRequest{TrustDomain: req.GetTrustDomain()})
 	if err != nil {
 		return nil, err
@@ -181,6 +187,8 @@ func (p *Plugin) TaintJWTKey(ctx context.Context, req *datastorev1.TaintJWTKeyRe
 
 // Effectively a 1:1 copy from pkg/server/datastore/sqlstore/sqlstore.go:1565
 func (p *Plugin) RevokeJWTKey(ctx context.Context, req *datastorev1.RevokeJWTKeyRequest) (*datastorev1.RevokeJWTKeyResponse, error) {
+	p.log.WithField("authority_id", req.GetAuthorityId()).Debug("cassandra: RevokeJWTKey called")
+
 	bundleResp, err := p.FetchBundle(ctx, &datastorev1.FetchBundleRequest{TrustDomain: req.GetTrustDomain()})
 	if err != nil {
 		return nil, err

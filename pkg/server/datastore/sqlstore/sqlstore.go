@@ -880,7 +880,10 @@ func (ds *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest)
 
 	config.DBTypeConfig = dbTypeConfig
 
-	if err := config.Validate(); err != nil {
+	if _, err := ds.Validate(ctx, &configv1.ValidateRequest{
+		HclConfiguration:  req.HclConfiguration,
+		CoreConfiguration: req.CoreConfiguration,
+	}); err != nil {
 		return nil, err
 	}
 
@@ -1775,6 +1778,7 @@ func countAttestedNodesWithFilters(ctx context.Context, db *sqlDB, _ logrus.Fiel
 
 func createAttestedNodeEvent(tx *gorm.DB, event *datastore.AttestedNodeEvent) error {
 	if err := tx.Create(&AttestedNodeEvent{
+
 		ID:       event.EventID,
 		SpiffeID: event.SpiffeID,
 	}).Error; err != nil {

@@ -83,7 +83,7 @@ require (
 	github.com/spiffe/spire-api-sdk v1.2.5-0.20260428072036-00f73a61093a
 	github.com/spiffe/spire-plugin-sdk v1.4.4-0.20260617144146-5dcde407c4d1
 	github.com/stretchr/testify v1.12.1
-	github.com/tjons/cassandra-toolbox v0.1.2
+	github.com/tjons/cassandra-toolbox v0.1.3
 	github.com/uber-go/tally/v4 v4.1.17
 	github.com/valyala/fastjson v1.6.10
 	golang.org/x/crypto v0.55.0
@@ -333,4 +333,4 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace github.com/spiffe/spire-plugin-sdk => github.com/geico/spire-plugin-sdk v0.0.0-20260302202914-953323cdca15
+replace github.com/spiffe/spire-plugin-sdk => github.com/geico/spire-plugin-sdk v0.0.0-20260915235910-05f4538bed0a

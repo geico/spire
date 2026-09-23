@@ -17,9 +17,12 @@ import (
 	"github.com/spiffe/spire/pkg/common/telemetry"
 	"github.com/tjons/cassandra-toolbox/qb"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/proto"
 )
 
 func (p *Plugin) CountRegistrationEntries(ctx context.Context, req *datastorev1.CountRegistrationEntriesRequest) (*datastorev1.CountRegistrationEntriesResponse, error) {
+	p.log.Debug("cassandra: CountRegistrationEntries called")
+
 	args := []any{}
 	fields := []string{}
 	operators := []string{}
@@ -97,6 +100,8 @@ func (p *Plugin) CreateRegistrationEntry(
 	ctx context.Context,
 	req *datastorev1.CreateRegistrationEntryRequest,
 ) (*datastorev1.CreateRegistrationEntryResponse, error) {
+	p.log.WithField("spiffe_id", req.GetEntry().GetSpiffeId()).Debug("cassandra: CreateRegistrationEntry called")
+
 	if req.GetEntry() == nil {
 		return nil, newValidationError("invalid request: missing registration entry")
 	}
@@ -159,6 +164,12 @@ func (p *Plugin) createRegistrationEntry(
 		entryID = uuid.String()
 	}
 
+	p.log.WithFields(logrus.Fields{
+		"entry_id":  entryID,
+		"spiffe_id": entry.SpiffeId,
+		"parent_id": entry.ParentId,
+	}).Debug("cassandra: creating registration entry")
+
 	entry.EntryId = entryID
 	entry.CreatedAt = time.Now().Unix()
 	entry.UpdatedAt = entry.CreatedAt
@@ -184,6 +195,7 @@ func (p *Plugin) createRegistrationEntry(
 			jwt_svid_ttl,
 			dns_names,
 			federated_trust_domains,
+			additional_attributes,
 			selector_types,
 			selector_values,
 			index_terms,
@@ -191,7 +203,7 @@ func (p *Plugin) createRegistrationEntry(
 			federated_trust_domains_full,
 			unrolled_selector_type_val,
 			unrolled_ftd
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	selectorTypes := make([]string, 0, len(entry.Selectors))
@@ -202,6 +214,11 @@ func (p *Plugin) createRegistrationEntry(
 		selectorTypes = append(selectorTypes, sl.Type)
 		selectorValues = append(selectorValues, sl.Value)
 		selectorTypeValueFull = append(selectorTypeValueFull, sl.Type+"|"+sl.Value)
+	}
+
+	aas, err := proto.Marshal(entry.AdditionalAttributes)
+	if err != nil {
+		return nil, newWrappedCassandraError(err)
 	}
 
 	commonVals := []any{
@@ -220,6 +237,7 @@ func (p *Plugin) createRegistrationEntry(
 		entry.JwtSvidTtl,
 		entry.DnsNames,
 		entry.FederatesWith,
+		aas,
 		selectorTypes,
 		selectorValues,
 		indexes,
@@ -284,6 +302,10 @@ func validateRegistrationEntry(entry *datastorev1.RegistrationEntry) error {
 	// it is done to avoid users to mix selectors from different platforms in
 	// entries with storable SVIDs
 	if entry.StoreSvid {
+		if entry.AdditionalAttributes.GetDisableX509SvidPrefetch() {
+			return newValidationError("specifying cache behaviour is incompatible with storable SVIDs")
+		}
+
 		// Selectors must never be empty
 		tpe := entry.Selectors[0].Type
 		for _, t := range entry.Selectors {
@@ -322,6 +344,10 @@ func (p *Plugin) CreateOrReturnRegistrationEntry(
 	ctx context.Context,
 	req *datastorev1.CreateOrReturnRegistrationEntryRequest,
 ) (*datastorev1.CreateOrReturnRegistrationEntryResponse, error) {
+	p.log.WithFields(logrus.Fields{
+		"spiffe_id": req.GetEntry().GetSpiffeId(),
+		"parent_id": req.GetEntry().GetParentId(),
+	}).Debug("cassandra: CreateOrReturnRegistrationEntry called")
 	if err := validateRegistrationEntry(req.Entry); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -371,6 +397,7 @@ func (p *Plugin) DeleteRegistrationEntry(
 	ctx context.Context,
 	req *datastorev1.DeleteRegistrationEntryRequest,
 ) (*datastorev1.DeleteRegistrationEntryResponse, error) {
+	p.log.WithField("entry_id", req.GetEntryId()).Debug("cassandra: DeleteRegistrationEntry called")
 	entries, err := p.fetchRegistrationEntries(ctx, []string{req.EntryId})
 	if err != nil {
 		return nil, newWrappedCassandraError(err)
@@ -429,24 +456,11 @@ func (p *Plugin) deleteRegistrationEntry(ctx context.Context, re *datastorev1.Re
 	return nil
 }
 
-func (p *Plugin) FetchRegistrationEntry(
-	ctx context.Context,
-	req *datastorev1.FetchRegistrationEntryRequest,
-) (*datastorev1.FetchRegistrationEntryResponse, error) {
-	entries, err := p.fetchRegistrationEntries(ctx, []string{req.EntryId})
-	if err != nil {
-		return nil, err
-	}
-
-	return &datastorev1.FetchRegistrationEntryResponse{
-		Entry: entries[req.EntryId],
-	}, nil
-}
-
 func (p *Plugin) fetchRegistrationEntries(
 	ctx context.Context,
 	entryIDs []string,
 ) (map[string]*datastorev1.RegistrationEntry, error) {
+	p.log.WithField("entry_ids", entryIDs).Debug("cassandra: fetchRegistrationEntries called")
 	fetchRegistrationEntriesQuery := qb.NewSelect().
 		From("registered_entries").
 		Column("created_at").
@@ -464,7 +478,8 @@ func (p *Plugin) fetchRegistrationEntries(
 		Column("jwt_svid_ttl").
 		Column("dns_names").
 		Column("federated_trust_domains").
-		Column("selector_type_value_full")
+		Column("selector_type_value_full").
+		Column("additional_attributes")
 
 	cleanedEntryIDs := make([]string, 0, len(entryIDs))
 	for _, id := range entryIDs {
@@ -473,7 +488,7 @@ func (p *Plugin) fetchRegistrationEntries(
 		}
 	}
 	if len(cleanedEntryIDs) > 0 {
-		fetchRegistrationEntriesQuery = fetchRegistrationEntriesQuery.Where("entry_id", qb.In(cleanedEntryIDs...)).AllowFiltering()
+		fetchRegistrationEntriesQuery = fetchRegistrationEntriesQuery.Where("entry_id", qb.In(cleanedEntryIDs...))
 	}
 	// TODO(tjons): I don't think we need to ALLOW FILTERING here because we have an SAI on entry_id
 	// but cassandra is rejecting the query during the statement preparation phase unless we include it.
@@ -491,6 +506,7 @@ func (p *Plugin) fetchRegistrationEntries(
 			result    = new(datastorev1.RegistrationEntry)
 			selectors = []string{}
 			rnum      int64
+			aas       []byte
 		)
 
 		err := scanner.Scan(
@@ -510,6 +526,7 @@ func (p *Plugin) fetchRegistrationEntries(
 			&result.DnsNames,
 			&result.FederatesWith,
 			&selectors,
+			&aas,
 		)
 		if err != nil {
 			return nil, newWrappedCassandraError(err)
@@ -517,6 +534,14 @@ func (p *Plugin) fetchRegistrationEntries(
 
 		result.RevisionNumber = rnum
 		result.Selectors = selectorStringsToSelectorObjs(selectors)
+
+		if len(aas) > 0 {
+			err = proto.Unmarshal(aas, result.AdditionalAttributes)
+			if err != nil {
+				return nil, newWrappedCassandraError(err)
+			}
+		}
+
 		entryMap[result.EntryId] = result
 	}
 
@@ -531,6 +556,8 @@ func (p *Plugin) FetchRegistrationEntries(
 	ctx context.Context,
 	req *datastorev1.FetchRegistrationEntriesRequest,
 ) (*datastorev1.FetchRegistrationEntriesResponse, error) {
+	p.log.WithField("entry_ids_count", len(req.GetEntryIds())).Debug("cassandra: FetchRegistrationEntries called")
+
 	resp, err := p.fetchRegistrationEntries(ctx, req.EntryIds)
 	if err != nil {
 		return nil, err
@@ -541,19 +568,16 @@ func (p *Plugin) FetchRegistrationEntries(
 	}, nil
 }
 
-type queryTerm struct {
-	field              string
-	operator           string
-	values             []any
-	deepValues         [][]any
-	requireDistinct    bool
-	includeExtraColumn bool
-}
-
 func (p *Plugin) ListRegistrationEntries(
 	ctx context.Context,
 	req *datastorev1.ListRegistrationEntriesRequest,
 ) (*datastorev1.ListRegistrationEntriesResponse, error) {
+	p.log.WithFields(logrus.Fields{
+		"by_parent_id":   req.GetByParentId(),
+		"by_spiffe_id":   req.GetBySpiffeId(),
+		"has_pagination": req.Pagination != nil,
+	}).Debug("cassandra: ListRegistrationEntries called")
+
 	if req.Pagination != nil {
 		if req.Pagination.PageSize == 0 {
 			return nil, status.Error(codes.InvalidArgument, "cannot paginate with pagesize = 0")
@@ -571,7 +595,156 @@ func (p *Plugin) ListRegistrationEntries(
 		return nil, status.Error(codes.InvalidArgument, "cannot list by empty selector set")
 	}
 
-	selectBuilder := qb.NewSelect().
+	return p.listRegistrationEntries(ctx, req)
+}
+
+func filterByFederatesWith(req *datastorev1.ListRegistrationEntriesRequest, result *datastorev1.RegistrationEntry) bool {
+	if len(result.FederatesWith) == 0 {
+		return false
+	}
+
+	switch req.ByFederatesWith.MatchBehavior {
+	case datastorev1.MatchBehavior_MATCH_BEHAVIOR_MATCH_EXACT:
+		if len(req.GetByFederatesWith().FederatesWith) != len(result.GetFederatesWith()) {
+			return false
+		}
+
+		needsToFederateWith := make(map[string]struct{}, len(req.GetByFederatesWith().FederatesWith))
+		for _, ftd := range req.GetByFederatesWith().FederatesWith {
+			needsToFederateWith[ftd] = struct{}{}
+		}
+
+		for _, efw := range result.GetFederatesWith() {
+			if _, ok := needsToFederateWith[efw]; !ok {
+				return false
+			}
+		}
+
+		return true
+	case datastorev1.MatchBehavior_MATCH_BEHAVIOR_MATCH_SUBSET:
+		if len(result.FederatesWith) > len(req.ByFederatesWith.FederatesWith) {
+			return false
+		}
+
+		federatesWith := make(map[string]struct{}, len(result.FederatesWith))
+		for _, efw := range result.FederatesWith {
+			federatesWith[efw] = struct{}{}
+		}
+
+		for _, ftd := range req.GetByFederatesWith().FederatesWith {
+			if _, ok := federatesWith[ftd]; ok {
+				delete(federatesWith, ftd)
+			}
+		}
+
+		return len(federatesWith) == 0
+	case datastorev1.MatchBehavior_MATCH_BEHAVIOR_MATCH_SUPERSET:
+		if len(result.FederatesWith) < len(req.ByFederatesWith.FederatesWith) {
+			return false
+		}
+
+		mustFederateWith := make(map[string]struct{}, len(req.ByFederatesWith.FederatesWith))
+		for _, ftd := range req.ByFederatesWith.FederatesWith {
+			mustFederateWith[ftd] = struct{}{}
+		}
+
+		for _, ftd := range result.FederatesWith {
+			if _, ok := mustFederateWith[ftd]; ok {
+				delete(mustFederateWith, ftd)
+			}
+		}
+
+		return len(mustFederateWith) == 0
+	case datastorev1.MatchBehavior_MATCH_BEHAVIOR_MATCH_ANY:
+		needsToFederateWith := make(map[string]struct{}, len(req.GetByFederatesWith().FederatesWith))
+		for _, ftd := range req.GetByFederatesWith().FederatesWith {
+			needsToFederateWith[ftd] = struct{}{}
+		}
+
+		for _, efw := range result.GetFederatesWith() {
+			if _, ok := needsToFederateWith[efw]; ok {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	return false // this should not be treated as a fallback
+}
+
+func filterBySelectors(req *datastorev1.BySelectors, result interface {
+	GetSelectors() []*datastorev1.Selector
+}) bool {
+	switch req.MatchBehavior {
+	case datastorev1.MatchBehavior_MATCH_BEHAVIOR_MATCH_EXACT:
+		if len(req.Selectors) != len(result.GetSelectors()) {
+			return false
+		}
+
+		needsToMatch := make(map[string]string, len(req.GetSelectors()))
+		for _, s := range req.GetSelectors() {
+			needsToMatch[s.Type] = s.Value
+		}
+
+		for _, s := range result.GetSelectors() {
+			if v, ok := needsToMatch[s.Type]; !ok || v != s.Value {
+				return false
+			}
+		}
+
+		return true
+	case datastorev1.MatchBehavior_MATCH_BEHAVIOR_MATCH_SUBSET:
+		subset := make(map[string]string, len(result.GetSelectors()))
+		for _, s := range result.GetSelectors() {
+			subset[s.Type] = s.Value
+		}
+
+		for _, s := range req.Selectors {
+			if v, ok := subset[s.Type]; ok && v == s.Value {
+				delete(subset, s.Type)
+			}
+		}
+
+		return len(subset) == 0
+	case datastorev1.MatchBehavior_MATCH_BEHAVIOR_MATCH_SUPERSET:
+		mustMatch := make(map[string]string, len(req.Selectors))
+		for _, s := range req.Selectors {
+			mustMatch[s.Type] = s.Value
+		}
+
+		for _, s := range result.GetSelectors() {
+			if v, ok := mustMatch[s.Type]; ok && v == s.Value {
+				delete(mustMatch, s.Type)
+			}
+		}
+
+		return len(mustMatch) == 0
+	case datastorev1.MatchBehavior_MATCH_BEHAVIOR_MATCH_ANY:
+		needsToMatch := make(map[string]string, len(req.Selectors))
+		for _, s := range req.Selectors {
+			needsToMatch[s.Type] = s.Value
+		}
+
+		matched := false
+		for _, s := range result.GetSelectors() {
+			if v, ok := needsToMatch[s.Type]; ok && v == s.Value {
+				matched = true
+				break
+			}
+		}
+
+		return matched
+	}
+
+	return false
+}
+
+func (p *Plugin) listRegistrationEntries(
+	ctx context.Context,
+	req *datastorev1.ListRegistrationEntriesRequest,
+) (resp *datastorev1.ListRegistrationEntriesResponse, err error) {
+	q := qb.NewSelect().
 		From("registered_entries").
 		Column("created_at").
 		Column("updated_at").
@@ -589,149 +762,17 @@ func (p *Plugin) ListRegistrationEntries(
 		Column("dns_names").
 		Column("federated_trust_domains").
 		Column("selector_types").
-		Column("selector_values")
+		Column("selector_values").
+		Column("additional_attributes").
+		PerPartitionLimit(1)
 
-	collapseToPartitionRow := true
-	onlyFiltersStaticCols := true
-	terms := []queryTerm{}
-	if len(req.ByParentId) > 0 {
-		terms = append(terms, queryTerm{
-			field:    "parent_id",
-			operator: "=",
-			values:   []any{req.ByParentId},
-		})
+	cqlStmt := q.ToCQL()
+	cqlQuery := p.db.session.Query(cqlStmt, q.QueryValues()...).Consistency(p.db.cfg.ReadConsistency)
+	p.log.WithField("query", cqlStmt).Debug("cassandra: ListRegistrationEntries executing query")
 
-		selectBuilder.Where("parent_id", qb.Equals(req.ByParentId))
-	}
-
-	if len(req.BySpiffeId) > 0 {
-		terms = append(terms, queryTerm{
-			field:    "spiffe_id",
-			operator: "=",
-			values:   []any{req.BySpiffeId},
-		})
-
-		selectBuilder.Where("spiffe_id", qb.Equals(req.BySpiffeId))
-	}
-
-	if req.FilterByDownstream {
-		terms = append(terms, queryTerm{
-			field:    "downstream",
-			operator: "=",
-			values:   []any{req.DownstreamValue},
-		})
-
-		selectBuilder.Where("downstream", qb.Equals(req.DownstreamValue))
-	}
-
-	if len(req.ByHint) > 0 {
-		terms = append(terms, queryTerm{
-			field:    "hint",
-			operator: "=",
-			values:   []any{req.ByHint},
-		})
-		selectBuilder.Where("hint", qb.Equals(req.ByHint))
-	}
-
-	if req.ByFederatesWith != nil || req.BySelectors != nil {
-		indexes := generateSearchIndexesForRequest(req)
-		terms = append(terms, indexes...)
-		// TODO(tjons): this has to be temp
-
-		for _, idx := range indexes {
-			if idx.operator == "IN" {
-				collapseToPartitionRow = false
-			}
-		}
-	}
-
-	addDistinctionColumn := false
-	b := strings.Builder{}
-	b.WriteString(`
-		SELECT
-			created_at,
-			updated_at,
-			entry_id,
-			spiffe_id,
-			parent_id,
-			ttl,
-			admin,
-			downstream,
-			expiry,
-			revision_number,
-			store_svid,
-			hint,
-			jwt_svid_ttl,
-			dns_names,
-			federated_trust_domains,
-			selector_types,
-			selector_values
-		FROM registered_entries  
-	`)
-	if collapseToPartitionRow {
-		// b.WriteString(" unrolled_selector_type_val = '' AND unrolled_ftd = '' ") // no filtering at all, get all entries but limit this to the empty row for paging
-		// if len(terms) > 0 {
-		// 	b.WriteString(" AND ")
-		// }
-		// needsDistinct = true
-	}
-
-	args := make([]any, 0, len(terms))
-	if len(terms) > 0 {
-		b.WriteString("WHERE ")
-
-		for i, term := range terms {
-			if i > 0 {
-				b.WriteString(" AND ")
-			}
-			b.WriteString(term.field)
-			b.WriteString(" ")
-			b.WriteString(term.operator)
-
-			if term.operator == "IN" {
-				if !addDistinctionColumn {
-					addDistinctionColumn = term.includeExtraColumn
-					onlyFiltersStaticCols = false
-				}
-
-				if term.requireDistinct {
-					onlyFiltersStaticCols = true
-				}
-				// TODO(tjons): the logic in here is actually kinda dangerous
-				if len(term.deepValues) > 0 {
-					b.WriteString(" (")
-					b.WriteString(strings.TrimRight(strings.Repeat(" ?,", len(term.deepValues)), ","))
-					b.WriteString(")")
-					for _, dv := range term.deepValues {
-						args = append(args, dv)
-					}
-					continue
-				}
-
-				b.WriteString(" (")
-				b.WriteString(strings.TrimRight(strings.Repeat(" ?,", len(term.values)), ","))
-				b.WriteString(")")
-			} else {
-				b.WriteString(" ?")
-			}
-
-			args = append(args, term.values...)
-		}
-	}
-
-	b.WriteString(" ALLOW FILTERING")
-
-	query := b.String()
-	if !addDistinctionColumn {
-		query = strings.Replace(query, "updated_at,", "", 1)
-	}
-
-	if onlyFiltersStaticCols {
-		query = strings.Replace(query, "SELECT", "SELECT DISTINCT", 1)
-	}
-
-	cqlQuery := p.db.session.Query(query, args...).Consistency(p.db.cfg.ReadConsistency)
-
+	// We apply pagination here, if the caller has set it. If the caller has not set pagination,
+	// we rely on gocql's default behavior for pagination, which will automatically handle paging
+	// through results and fetching a new page as needed.
 	if req.Pagination != nil {
 		cqlQuery.PageSize(int(req.Pagination.PageSize))
 
@@ -740,8 +781,6 @@ func (p *Plugin) ListRegistrationEntries(
 		} else {
 			cqlQuery = cqlQuery.PageState(nil)
 		}
-	} else {
-		cqlQuery.PageSize(100_000_000) // effectively no limit
 	}
 
 	iter := cqlQuery.IterContext(ctx)
@@ -752,51 +791,55 @@ func (p *Plugin) ListRegistrationEntries(
 		var (
 			result                        = new(datastorev1.RegistrationEntry)
 			selectorTypes, selectorValues []string
+			aas                           = make([]byte, 0)
 			err                           error
 		)
 
-		if !addDistinctionColumn {
-			err = scanner.Scan(
-				&result.CreatedAt,
-				&result.EntryId,
-				&result.SpiffeId,
-				&result.ParentId,
-				&result.X509SvidTtl,
-				&result.Admin,
-				&result.Downstream,
-				&result.EntryExpiry,
-				&result.RevisionNumber,
-				&result.StoreSvid,
-				&result.Hint,
-				&result.JwtSvidTtl,
-				&result.DnsNames,
-				&result.FederatesWith,
-				&selectorTypes,
-				&selectorValues,
-			)
-		} else {
-			err = scanner.Scan(
-				&result.CreatedAt,
-				&result.UpdatedAt,
-				&result.EntryId,
-				&result.SpiffeId,
-				&result.ParentId,
-				&result.X509SvidTtl,
-				&result.Admin,
-				&result.Downstream,
-				&result.EntryExpiry,
-				&result.RevisionNumber,
-				&result.StoreSvid,
-				&result.Hint,
-				&result.JwtSvidTtl,
-				&result.DnsNames,
-				&result.FederatesWith,
-				&selectorTypes,
-				&selectorValues,
-			)
-		}
+		err = scanner.Scan(
+			&result.CreatedAt,
+			&result.UpdatedAt,
+			&result.EntryId,
+			&result.SpiffeId,
+			&result.ParentId,
+			&result.X509SvidTtl,
+			&result.Admin,
+			&result.Downstream,
+			&result.EntryExpiry,
+			&result.RevisionNumber,
+			&result.StoreSvid,
+			&result.Hint,
+			&result.JwtSvidTtl,
+			&result.DnsNames,
+			&result.FederatesWith,
+			&selectorTypes,
+			&selectorValues,
+			&aas,
+		)
 		if err != nil {
 			return nil, newWrappedCassandraError(err)
+		}
+
+		// preserve this filtering order, it will roughly execute cheapest (scalar comparisons) first
+		// then layer on more expensive (federation) to most expensive (selectors) so that we don't
+		// waste expensive checks on a row we could pre-eliminate
+		if req.BySpiffeId != "" && req.BySpiffeId != result.SpiffeId {
+			continue
+		}
+
+		if req.ByHint != "" && req.ByHint != result.Hint {
+			continue
+		}
+
+		if req.ByParentId != "" && req.ByParentId != result.ParentId {
+			continue
+		}
+
+		if req.FilterByDownstream && req.DownstreamValue != result.Downstream {
+			continue
+		}
+
+		if req.ByFederatesWith != nil && !filterByFederatesWith(req, result) {
+			continue
 		}
 
 		for i := range selectorTypes {
@@ -807,6 +850,17 @@ func (p *Plugin) ListRegistrationEntries(
 			result.Selectors = append(result.Selectors, selector)
 		}
 
+		if req.BySelectors != nil && !filterBySelectors(req.BySelectors, result) {
+			continue
+		}
+
+		if len(aas) > 0 {
+			err = proto.Unmarshal(aas, result.AdditionalAttributes)
+			if err != nil {
+				return nil, newWrappedCassandraError(err)
+			}
+		}
+
 		entryMap[result.EntryId] = result
 	}
 
@@ -814,43 +868,44 @@ func (p *Plugin) ListRegistrationEntries(
 		return nil, newWrappedCassandraError(err)
 	}
 	pageState := iter.PageState()
+	p.log.WithField("result_count", len(entryMap)).Debug("cassandra: ListRegistrationEntries scan complete")
 
-	r := &datastorev1.ListRegistrationEntriesResponse{
+	resp = &datastorev1.ListRegistrationEntriesResponse{
 		Entries: slices.Collect(maps.Values(entryMap)),
 	}
 
 	if req.Pagination != nil {
-		r.Pagination = &datastorev1.Pagination{
+		resp.Pagination = &datastorev1.Pagination{
 			PageSize: req.Pagination.PageSize,
 		}
 
 		// go ahead and "peek"	if there is a next page...
-		peeker := p.db.session.Query(query, args...).Consistency(p.db.cfg.ReadConsistency)
+		peeker := p.db.session.Query(cqlStmt, q.QueryValues()...).Consistency(p.db.cfg.ReadConsistency)
 
 		peeker.PageState(pageState)
 		peeker.PageSize(1)                  // I hate all this and i think it would be better if we just dropped the silly next pagination requirement for cassandra
 		peekIter := peeker.IterContext(ctx) // at a minimum, we should feature flag this
 		if peekIter.NumRows() > 0 {
-			r.Pagination.PageToken = base64.URLEncoding.Strict().EncodeToString(pageState)
+			resp.Pagination.PageToken = base64.URLEncoding.Strict().EncodeToString(pageState)
 		}
 		if err := peekIter.Close(); err != nil {
 			return nil, newWrappedCassandraError(err)
 		}
 	}
 
-	return r, nil
+	return
 }
 
 func (p *Plugin) PruneRegistrationEntries(
 	ctx context.Context,
 	req *datastorev1.PruneRegistrationEntriesRequest,
 ) (*datastorev1.PruneRegistrationEntriesResponse, error) {
+	p.log.WithField("expires_before", req.GetExpiresBefore()).Debug("cassandra: PruneRegistrationEntries called")
+
 	selectPruneQuery := qb.NewSelect().
 		From("registered_entries").
-		Columns([]string{"entry_id", "spiffe_id", "parent_id", "federated_trust_domains"}).
-		Where("expiry", qb.LessThan(req.ExpiresBefore)).
-		Where("expiry", qb.GreaterThan(0)).
-		AllowFiltering()
+		Columns([]string{"entry_id", "spiffe_id", "parent_id", "federated_trust_domains", "expiry"}).
+		PerPartitionLimit(1)
 
 	query := p.db.ReadQuery(selectPruneQuery).Consistency(p.db.cfg.ReadConsistency)
 	iter := query.IterContext(ctx)
@@ -860,6 +915,7 @@ func (p *Plugin) PruneRegistrationEntries(
 		spiffeID              string
 		parentID              string
 		federatedTrustDomains []string
+		expiry                int64
 	}
 
 	entries := make([]entryToPrune, 0, iter.NumRows())
@@ -867,10 +923,15 @@ func (p *Plugin) PruneRegistrationEntries(
 
 	for scanner.Next() {
 		var entry entryToPrune
-		err := scanner.Scan(&entry.entryID, &entry.spiffeID, &entry.parentID, &entry.federatedTrustDomains)
+		err := scanner.Scan(&entry.entryID, &entry.spiffeID, &entry.parentID, &entry.federatedTrustDomains, &entry.expiry)
 		if err != nil {
 			return nil, newWrappedCassandraError(err)
 		}
+
+		if entry.expiry == 0 || entry.expiry >= req.ExpiresBefore {
+			continue
+		}
+
 		entries = append(entries, entry)
 	}
 	if err := iter.Close(); err != nil {
@@ -926,6 +987,8 @@ func (p *Plugin) UpdateRegistrationEntry(
 	ctx context.Context,
 	req *datastorev1.UpdateRegistrationEntryRequest,
 ) (*datastorev1.UpdateRegistrationEntryResponse, error) {
+	p.log.WithField("entry_id", req.GetEntry().GetEntryId()).Debug("cassandra: UpdateRegistrationEntry called")
+
 	if req.GetEntry() == nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid request: missing registration entry")
 	}
@@ -937,16 +1000,23 @@ func (p *Plugin) UpdateRegistrationEntry(
 		return nil, err
 	}
 
-	entryResp, err := p.FetchRegistrationEntry(ctx, &datastorev1.FetchRegistrationEntryRequest{
-		EntryId: re.EntryId,
+	resp, err := p.FetchRegistrationEntries(ctx, &datastorev1.FetchRegistrationEntriesRequest{
+		EntryIds: []string{re.EntryId},
 	})
 	if err != nil {
 		return nil, newWrappedCassandraError(err)
 	}
-	if entryResp.GetEntry() == nil {
+
+	var entry *datastorev1.RegistrationEntry
+	for _, e := range resp.Entries {
+		if e.GetEntryId() == re.EntryId {
+			entry = e
+			break
+		}
+	}
+	if entry == nil {
 		return nil, status.Error(codes.NotFound, NotFoundErr.Error())
 	}
-	entry := entryResp.GetEntry()
 
 	b := p.db.session.Batch(gocql.LoggedBatch).Consistency(p.db.cfg.WriteConsistency)
 	updateQuery := qb.NewUpdate().
@@ -1101,9 +1171,7 @@ func (p *Plugin) UpdateRegistrationEntry(
 	updateQuery.Where("unrolled_ftd", qb.Equals(""))
 	updateQuery.Where("unrolled_selector_type_val", qb.Equals(""))
 
-	q, _ := updateQuery.Build()
-	b.Query(q, updateQuery.QueryValues()...)
-
+	b.Query(updateQuery.ToCQL(), updateQuery.QueryValues()...)
 	if err := b.ExecContext(ctx); err != nil {
 		return nil, newWrappedCassandraError(err)
 	}

@@ -35,6 +35,8 @@ func (p *Plugin) nextCAJournalID(ctx context.Context) (uint, error) {
 }
 
 func (p *Plugin) SetCAJournal(ctx context.Context, req *datastorev1.SetCAJournalRequest) (*datastorev1.SetCAJournalResponse, error) {
+	p.log.WithField("journal_id", req.GetJournal().GetId()).Debug("cassandra: SetCAJournal called")
+
 	if req == nil || req.GetJournal() == nil {
 		return nil, status.Error(codes.InvalidArgument, "ca journal is required")
 	}
@@ -151,6 +153,8 @@ func (p *Plugin) fetchCAJournalByActiveX509AuthorityID(ctx context.Context, acti
 }
 
 func (p *Plugin) FetchCAJournal(ctx context.Context, req *datastorev1.FetchCAJournalRequest) (*datastorev1.FetchCAJournalResponse, error) {
+	p.log.WithField("active_x509_authority_id", req.GetActiveX509AuthorityId()).Debug("cassandra: FetchCAJournal called")
+
 	if req.GetActiveX509AuthorityId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "active X509 authority ID is required")
 	}
@@ -169,6 +173,8 @@ func (p *Plugin) FetchCAJournal(ctx context.Context, req *datastorev1.FetchCAJou
 }
 
 func (p *Plugin) PruneCAJournals(ctx context.Context, req *datastorev1.PruneCAJournalsRequest) (*datastorev1.PruneCAJournalsResponse, error) {
+	p.log.WithField("expires_before", req.GetExpiresBefore()).Debug("cassandra: PruneCAJournals called")
+
 	journals, err := p.listCAJournals(ctx)
 	if err != nil {
 		return nil, err
@@ -219,6 +225,8 @@ func (p *Plugin) deleteCAJournal(ctx context.Context, id uint64) error {
 }
 
 func (p *Plugin) ListCAJournals(ctx context.Context, req *datastorev1.ListCAJournalsRequest) (*datastorev1.ListCAJournalsResponse, error) {
+	p.log.Debug("cassandra: ListCAJournals called")
+
 	journals, err := p.listCAJournals(ctx)
 	if err != nil {
 		return nil, err
