@@ -16,9 +16,6 @@ import (
 	"unicode"
 
 	"github.com/gofrs/uuid/v5"
-	"github.com/hashicorp/hcl"
-	"github.com/hashicorp/hcl/hcl/ast"
-	"github.com/hashicorp/hcl/hcl/printer"
 	"github.com/jinzhu/gorm"
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/spire/pkg/common/util"
@@ -54,27 +51,6 @@ var validEntryIDChars = &unicode.RangeTable{
 const (
 	PluginName = "sql"
 
-	// MySQL database type
-	MySQL = "mysql"
-	// PostgreSQL database type
-	PostgreSQL = "postgres"
-	// SQLite database type
-	SQLite = "sqlite3"
-
-	// MySQL database provided by an AWS service
-	AWSMySQL = "aws_mysql"
-
-	// PostgreSQL database type provided by an AWS service
-	AWSPostgreSQL = "aws_postgres"
-
-	// PostgreSQL database type provided by an Azure service, authenticated
-	// using Microsoft Entra ID (Azure AD)
-	AzurePostgreSQL = "azure_postgres"
-
-	// MySQL database type provided by an Azure service, authenticated using
-	// Microsoft Entra ID (Azure AD)
-	AzureMySQL = "azure_mysql"
-
 	// Maximum size for preallocation in a paginated request
 	maxResultPreallocation = 1000
 
@@ -85,6 +61,18 @@ const (
 	// nodes pruned per call when no batch size (or a non-positive one) is
 	// provided.
 	defaultPruneAttestedNodesBatchSize = 1000
+)
+
+// Database types supported by the datastore. The definitions live in
+// sqlcommon; these aliases keep the exported identifiers of this package.
+const (
+	MySQL           = sqlcommon.MySQL
+	PostgreSQL      = sqlcommon.PostgreSQL
+	SQLite          = sqlcommon.SQLite
+	AWSMySQL        = sqlcommon.AWSMySQL
+	AWSPostgreSQL   = sqlcommon.AWSPostgreSQL
+	AzurePostgreSQL = sqlcommon.AzurePostgreSQL
+	AzureMySQL      = sqlcommon.AzureMySQL
 )
 
 type sqlDB struct {
@@ -856,19 +844,12 @@ checkAuthorities:
 // Configure parses HCL config payload into config struct, opens new DB based on the result, and
 // prunes all orphaned records
 func (ds *Plugin) Configure(ctx context.Context, hclConfiguration string) error {
-	config := &sqlcommon.Configuration{}
-	if err := hcl.Decode(config, hclConfiguration); err != nil {
-		return err
-	}
-
-	dbTypeConfig, err := parseDatabaseTypeASTNode(config.DatabaseTypeNode)
+	config, err := sqlcommon.BuildConfig(hclConfiguration)
 	if err != nil {
 		return err
 	}
 
-	config.DBTypeConfig = dbTypeConfig
-
-	if err := configValidate(config); err != nil {
+	if err := sqlcommon.ConfigValidate(config); err != nil {
 		return err
 	}
 
@@ -876,13 +857,13 @@ func (ds *Plugin) Configure(ctx context.Context, hclConfiguration string) error 
 }
 
 func (ds *Plugin) Validate(ctx context.Context, coreConfig catalog.CoreConfig, configuration string) (*configv1.ValidateResponse, error) {
-	config, err := buildConfig(configuration)
+	config, err := sqlcommon.BuildConfig(configuration)
 	if err != nil {
 		return &configv1.ValidateResponse{
 			Notes: []string{err.Error()},
 		}, err
 	}
-	err = configValidate(config)
+	err = sqlcommon.ConfigValidate(config)
 	if err != nil {
 		return &configv1.ValidateResponse{
 			Notes: []string{err.Error()},
@@ -892,21 +873,6 @@ func (ds *Plugin) Validate(ctx context.Context, coreConfig catalog.CoreConfig, c
 	return &configv1.ValidateResponse{
 		Valid: true,
 	}, nil
-}
-
-func buildConfig(hclConfiguration string) (*sqlcommon.Configuration, error) {
-	config := &sqlcommon.Configuration{}
-	if err := hcl.Decode(config, hclConfiguration); err != nil {
-		return nil, err
-	}
-
-	dbTypeConfig, err := parseDatabaseTypeASTNode(config.DatabaseTypeNode)
-	if err != nil {
-		return nil, err
-	}
-
-	config.DBTypeConfig = dbTypeConfig
-	return config, nil
 }
 
 func (ds *Plugin) openConnections(ctx context.Context, config *sqlcommon.Configuration) error {
@@ -993,7 +959,7 @@ func (ds *Plugin) Close() error {
 func (ds *Plugin) withReadModifyWriteTx(ctx context.Context, op func(tx *gorm.DB) error) error {
 	return ds.withTx(ctx, func(tx *gorm.DB) error {
 		switch {
-		case isMySQLDbType(ds.db.databaseType):
+		case sqlcommon.IsMySQLDbType(ds.db.databaseType):
 			// MySQL REPEATABLE READ is weaker than that of PostgreSQL. Namely,
 			// PostgreSQL, beyond providing the minimum consistency guarantees
 			// mandated for REPEATABLE READ in the standard, automatically fails
@@ -1005,7 +971,7 @@ func (ds *Plugin) withReadModifyWriteTx(ctx context.Context, op func(tx *gorm.DB
 			// isolation level, like SERIALIZABLE, which is not supported by
 			// some MySQL-compatible databases (i.e. Percona XtraDB cluster)
 			tx = tx.Set("gorm:query_option", "FOR UPDATE")
-		case isPostgresDbType(ds.db.databaseType):
+		case sqlcommon.IsPostgresDbType(ds.db.databaseType):
 			// `SELECT .. FOR UPDATE`is also required when PostgreSQL is in
 			// hot standby mode for this operation to work properly (see issue #3039).
 			tx = tx.Set("gorm:query_option", "FOR UPDATE")
@@ -1095,11 +1061,11 @@ func (ds *Plugin) openDB(ctx context.Context, cfg *sqlcommon.Configuration, isRe
 
 	ds.log.WithField(telemetry.DatabaseType, cfg.DBTypeConfig.DatabaseType).Info("Opening SQL database")
 	switch {
-	case isSQLiteDbType(cfg.DBTypeConfig.DatabaseType):
+	case sqlcommon.IsSQLiteDbType(cfg.DBTypeConfig.DatabaseType):
 		dialect = sqliteDB{log: ds.log}
-	case isPostgresDbType(cfg.DBTypeConfig.DatabaseType):
+	case sqlcommon.IsPostgresDbType(cfg.DBTypeConfig.DatabaseType):
 		dialect = postgresDB{}
-	case isMySQLDbType(cfg.DBTypeConfig.DatabaseType):
+	case sqlcommon.IsMySQLDbType(cfg.DBTypeConfig.DatabaseType):
 		dialect = mysqlDB{
 			logger: ds.log,
 		}
@@ -1968,9 +1934,9 @@ func listAttestedNodesOnce(ctx context.Context, db *sqlDB, req *datastore.ListAt
 
 func buildListAttestedNodesQuery(dbType string, supportsCTE bool, req *datastore.ListAttestedNodesRequest) (string, []any, error) {
 	switch {
-	case isSQLiteDbType(dbType):
+	case sqlcommon.IsSQLiteDbType(dbType):
 		return buildListAttestedNodesQueryCTE(req, dbType)
-	case isPostgresDbType(dbType):
+	case sqlcommon.IsPostgresDbType(dbType):
 		// The PostgreSQL queries unconditionally leverage CTE since all versions
 		// of PostgreSQL supported by the plugin support CTE.
 		query, args, err := buildListAttestedNodesQueryCTE(req, dbType)
@@ -1978,7 +1944,7 @@ func buildListAttestedNodesQuery(dbType string, supportsCTE bool, req *datastore
 			return query, args, err
 		}
 		return postgreSQLRebind(query), args, nil
-	case isMySQLDbType(dbType):
+	case sqlcommon.IsMySQLDbType(dbType):
 		if supportsCTE {
 			return buildListAttestedNodesQueryCTE(req, dbType)
 		}
@@ -1986,6 +1952,11 @@ func buildListAttestedNodesQuery(dbType string, supportsCTE bool, req *datastore
 	default:
 		return "", nil, sqlcommon.NewSQLError("unsupported db type: %q", dbType)
 	}
+}
+
+func isBulkAttestedNodeIDFetch(req *datastore.ListAttestedNodesRequest) bool {
+	hasSelectorMatch := req.BySelectorMatch != nil && len(req.BySelectorMatch.Selectors) > 0
+	return len(req.BySpiffeIDs) > 0 && req.Pagination == nil && !hasSelectorMatch
 }
 
 func buildListAttestedNodesQueryCTE(req *datastore.ListAttestedNodesRequest, dbType string) (string, []any, error) {
@@ -2107,10 +2078,18 @@ SELECT
 
 	builder.WriteString("\n")
 	builder.WriteString(fromQuery)
+
+	// Skip the wrapper only for bounded ID fetches. Keep the existing query
+	// shape for other requests to avoid changing full-load plans.
+	if isBulkAttestedNodeIDFetch(req) {
+		builder.WriteString("\nORDER BY id ASC\n")
+		return builder.String(), args, nil
+	}
+
 	builder.WriteString("\nWHERE id IN (\n")
 
 	// MySQL requires a subquery in order to apply pagination
-	if req.Pagination != nil && isMySQLDbType(dbType) {
+	if req.Pagination != nil && sqlcommon.IsMySQLDbType(dbType) {
 		builder.WriteString("\tSELECT id FROM (\n")
 	}
 
@@ -2136,7 +2115,7 @@ SELECT
 			for i := range req.BySelectorMatch.Selectors {
 				switch {
 				// MySQL does not support INTERSECT, so use INNER JOIN instead
-				case isMySQLDbType(dbType):
+				case sqlcommon.IsMySQLDbType(dbType):
 					if len(req.BySelectorMatch.Selectors) > 1 {
 						builder.WriteString("\t\t(")
 					}
@@ -2181,7 +2160,7 @@ SELECT
 		builder.WriteString(fromQuery)
 	}
 
-	if isPostgresDbType(dbType) ||
+	if sqlcommon.IsPostgresDbType(dbType) ||
 		(req.BySelectorMatch != nil &&
 			(req.BySelectorMatch.Match == datastore.Subset || req.BySelectorMatch.Match == datastore.MatchAny || len(req.BySelectorMatch.Selectors) == 1)) {
 		builder.WriteString(" AS result_nodes")
@@ -2192,7 +2171,7 @@ SELECT
 		builder.WriteString(strconv.FormatInt(int64(req.Pagination.PageSize), 10))
 
 		// Add workaround for limit
-		if isMySQLDbType(dbType) {
+		if sqlcommon.IsMySQLDbType(dbType) {
 			builder.WriteString("\n\t) workaround_for_mysql_subquery_limit")
 		}
 	}
@@ -2300,6 +2279,14 @@ FROM attested_node_entries N
 			args = append(args, buildArgs(req.BySpiffeIDs)...)
 		}
 		return nil
+	}
+
+	if fetchSelectors && isBulkAttestedNodeIDFetch(req) {
+		if err := writeFilter(); err != nil {
+			return "", nil, err
+		}
+		builder.WriteString(" ORDER BY e_id, S.id\n")
+		return builder.String(), args, nil
 	}
 
 	// Add filter by selectors
@@ -2625,7 +2612,8 @@ func createRegistrationEntry(tx *gorm.DB, entry *common.RegistrationEntry) (*com
 		AdditionalAttributes: AdditionalAttributes,
 	}
 
-	if err := tx.Create(&newRegisteredEntry).Error; err != nil {
+	// Omit wit_svid_ttl field until SPIRE 1.17.0
+	if err := tx.Omit("wit_svid_ttl").Create(&newRegisteredEntry).Error; err != nil {
 		return nil, sqlcommon.NewWrappedSQLError(err)
 	}
 
@@ -2697,15 +2685,15 @@ func fetchRegistrationEntries(ctx context.Context, db *sqlDB, entryIDs []string)
 
 func buildFetchRegistrationEntriesQuery(dbType string, supportsCTE bool, entryIDs []string) (string, []any, error) {
 	switch {
-	case isSQLiteDbType(dbType):
+	case sqlcommon.IsSQLiteDbType(dbType):
 		// The SQLite3 queries unconditionally leverage CTE since the
 		// embedded version of SQLite3 supports CTE.
 		return buildFetchRegistrationEntriesQuerySQLite3(entryIDs)
-	case isPostgresDbType(dbType):
+	case sqlcommon.IsPostgresDbType(dbType):
 		// The PostgreSQL queries unconditionally leverage CTE since all versions
 		// of PostgreSQL supported by the plugin support CTE.
 		return buildFetchRegistrationEntriesQueryPostgreSQL(entryIDs)
-	case isMySQLDbType(dbType):
+	case sqlcommon.IsMySQLDbType(dbType):
 		if supportsCTE {
 			return buildFetchRegistrationEntriesQueryMySQLCTE(entryIDs)
 		}
@@ -2740,6 +2728,7 @@ SELECT
 	NULL AS dns_name,
 	revision_number,
 	jwt_svid_ttl AS reg_jwt_svid_ttl,
+	NULL AS reg_wit_svid_ttl,
 	additional_attributes
 FROM
 	registered_entries
@@ -2748,7 +2737,7 @@ WHERE id IN (SELECT id FROM listing)
 UNION
 
 SELECT
-	F.registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, B.trust_domain, NULL, NULL, NULL, NULL, NULL
+	F.registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, B.trust_domain, NULL, NULL, NULL, NULL, NULL, NULL
 FROM
 	bundles B
 INNER JOIN
@@ -2761,7 +2750,7 @@ WHERE
 UNION
 
 SELECT
-	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, value, NULL, NULL, NULL
+	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, value, NULL, NULL, NULL, NULL
 FROM
 	dns_names
 WHERE registered_entry_id IN (SELECT id FROM listing)
@@ -2769,7 +2758,7 @@ WHERE registered_entry_id IN (SELECT id FROM listing)
 UNION
 
 SELECT
-	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, type, value, NULL, NULL, NULL, NULL, NULL, NULL
+	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, type, value, NULL, NULL, NULL, NULL, NULL, NULL, NULL
 FROM
 	selectors
 WHERE registered_entry_id IN (SELECT id FROM listing)
@@ -2805,6 +2794,7 @@ SELECT
 	NULL AS dns_name,
 	revision_number,
 	jwt_svid_ttl AS reg_jwt_svid_ttl,
+	NULL AS reg_wit_svid_ttl,
 	additional_attributes
 FROM
 	registered_entries
@@ -2813,7 +2803,7 @@ WHERE id IN (SELECT id FROM listing)
 UNION
 
 SELECT
-	F.registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, B.trust_domain, NULL, NULL, NULL, NULL, NULL
+	F.registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, B.trust_domain, NULL, NULL, NULL, NULL, NULL, NULL
 FROM
 	bundles B
 INNER JOIN
@@ -2826,7 +2816,7 @@ WHERE
 UNION
 
 SELECT
-	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, value, NULL, NULL, NULL
+	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, value, NULL, NULL, NULL, NULL
 FROM
 	dns_names
 WHERE registered_entry_id IN (SELECT id FROM listing)
@@ -2834,7 +2824,7 @@ WHERE registered_entry_id IN (SELECT id FROM listing)
 UNION
 
 SELECT
-	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, type, value, NULL, NULL, NULL, NULL, NULL, NULL
+	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, type, value, NULL, NULL, NULL, NULL, NULL, NULL, NULL
 FROM
 	selectors
 WHERE registered_entry_id IN (SELECT id FROM listing)
@@ -2866,6 +2856,7 @@ SELECT
 	D.value AS dns_name,
 	E.revision_number,
 	E.jwt_svid_ttl AS reg_jwt_svid_ttl,
+	NULL AS reg_wit_svid_ttl,
 	E.additional_attributes AS additional_attributes
 FROM
 	registered_entries E
@@ -2909,6 +2900,7 @@ SELECT
 	NULL AS dns_name,
 	revision_number,
 	jwt_svid_ttl AS reg_jwt_svid_ttl,
+	NULL AS reg_wit_svid_ttl,
 	additional_attributes
 FROM
 	registered_entries
@@ -2917,7 +2909,7 @@ WHERE id IN (SELECT id FROM listing)
 UNION ALL
 
 SELECT
-	F.registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, B.trust_domain, NULL, NULL, NULL, NULL, NULL
+	F.registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, B.trust_domain, NULL, NULL, NULL, NULL, NULL, NULL
 FROM
 	bundles B
 INNER JOIN
@@ -2930,7 +2922,7 @@ WHERE
 UNION ALL
 
 SELECT
-	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, value, NULL, NULL, NULL
+	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, value, NULL, NULL, NULL, NULL
 FROM
 	dns_names
 WHERE registered_entry_id IN (SELECT id FROM listing)
@@ -2938,7 +2930,7 @@ WHERE registered_entry_id IN (SELECT id FROM listing)
 UNION ALL
 
 SELECT
-	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, type, value, NULL, NULL, NULL, NULL, NULL, NULL
+	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, type, value, NULL, NULL, NULL, NULL, NULL, NULL, NULL
 FROM
 	selectors
 WHERE registered_entry_id IN (SELECT id FROM listing)
@@ -3067,15 +3059,15 @@ func listRegistrationEntriesOnce(ctx context.Context, db queryContext, databaseT
 
 func buildListRegistrationEntriesQuery(dbType string, supportsCTE bool, req *datastore.ListRegistrationEntriesRequest) (string, []any, error) {
 	switch {
-	case isSQLiteDbType(dbType):
+	case sqlcommon.IsSQLiteDbType(dbType):
 		// The SQLite3 queries unconditionally leverage CTE since the
 		// embedded version of SQLite3 supports CTE.
 		return buildListRegistrationEntriesQuerySQLite3(req)
-	case isPostgresDbType(dbType):
+	case sqlcommon.IsPostgresDbType(dbType):
 		// The PostgreSQL queries unconditionally leverage CTE since all versions
 		// of PostgreSQL supported by the plugin support CTE.
 		return buildListRegistrationEntriesQueryPostgreSQL(req)
-	case isMySQLDbType(dbType):
+	case sqlcommon.IsMySQLDbType(dbType):
 		if supportsCTE {
 			return buildListRegistrationEntriesQueryMySQLCTE(req)
 		}
@@ -3121,6 +3113,7 @@ SELECT
 	NULL AS dns_name,
 	revision_number,
 	jwt_svid_ttl AS reg_jwt_svid_ttl,
+	NULL AS reg_wit_svid_ttl,
 	additional_attributes
 FROM
 	registered_entries
@@ -3140,7 +3133,7 @@ FROM
 UNION
 
 SELECT
-	F.registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, B.trust_domain, NULL, NULL, NULL, NULL, NULL
+	F.registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, B.trust_domain, NULL, NULL, NULL, NULL, NULL, NULL
 FROM
 	bundles B
 INNER JOIN
@@ -3155,7 +3148,7 @@ ON
 UNION
 
 SELECT
-	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, value, NULL, NULL, NULL
+	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, value, NULL, NULL, NULL, NULL
 FROM
 	dns_names
 `)
@@ -3166,7 +3159,7 @@ FROM
 UNION
 
 SELECT
-	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, type, value, NULL, NULL, NULL, NULL, NULL, NULL
+	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, type, value, NULL, NULL, NULL, NULL, NULL, NULL, NULL
 FROM
 	selectors
 `)
@@ -3217,6 +3210,7 @@ SELECT
 	NULL AS dns_name,
 	revision_number,
 	jwt_svid_ttl AS reg_jwt_svid_ttl,
+	NULL AS reg_wit_svid_ttl,
 	additional_attributes
 FROM
 	registered_entries
@@ -3235,7 +3229,7 @@ FROM
 UNION ALL
 
 SELECT
-	F.registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, B.trust_domain, NULL, NULL, NULL, NULL, NULL
+	F.registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, B.trust_domain, NULL, NULL, NULL, NULL, NULL, NULL
 FROM
 	bundles B
 INNER JOIN
@@ -3250,7 +3244,7 @@ ON
 UNION ALL
 
 SELECT
-	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, value, NULL, NULL, NULL
+	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, value, NULL, NULL, NULL, NULL
 FROM
 	dns_names
 `)
@@ -3261,7 +3255,7 @@ FROM
 UNION ALL
 
 SELECT
-	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, type, value, NULL, NULL, NULL, NULL, NULL, NULL
+	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, type, value, NULL, NULL, NULL, NULL, NULL, NULL, NULL
 FROM
 	selectors
 `)
@@ -3276,7 +3270,7 @@ ORDER BY e_id, selector_id, dns_name_id
 }
 
 func maybeRebind(dbType, query string) string {
-	if isPostgresDbType(dbType) {
+	if sqlcommon.IsPostgresDbType(dbType) {
 		return postgreSQLRebind(query)
 	}
 	return query
@@ -3311,6 +3305,7 @@ SELECT
 	D.value AS dns_name,
 	E.revision_number,
 	E.jwt_svid_ttl AS reg_jwt_svid_ttl,
+	NULL AS reg_wit_svid_ttl,
 	E.additional_attributes AS additional_attributes
 FROM
 	registered_entries E
@@ -3386,6 +3381,7 @@ SELECT
 	NULL AS dns_name,
 	revision_number,
 	jwt_svid_ttl AS reg_jwt_svid_ttl,
+	NULL AS reg_wit_svid_ttl,
 	additional_attributes
 FROM
 	registered_entries
@@ -3404,7 +3400,7 @@ FROM
 UNION
 
 SELECT
-	F.registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, B.trust_domain, NULL, NULL, NULL, NULL, NULL
+	F.registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, B.trust_domain, NULL, NULL, NULL, NULL, NULL, NULL
 FROM
 	bundles B
 INNER JOIN
@@ -3419,7 +3415,7 @@ ON
 UNION
 
 SELECT
-	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, value, NULL, NULL, NULL
+	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, value, NULL, NULL, NULL, NULL
 FROM
 	dns_names
 `)
@@ -3430,7 +3426,7 @@ FROM
 UNION
 
 SELECT
-	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, type, value, NULL, NULL, NULL, NULL, NULL, NULL
+	registered_entry_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, id, type, value, NULL, NULL, NULL, NULL, NULL, NULL, NULL
 FROM
 	selectors
 `)
@@ -3547,7 +3543,7 @@ func (n idFilterNode) render(builder *strings.Builder, dbType string, sibling in
 			}
 			child.render(builder, dbType, i, indentation+1, true, true)
 		}
-	case !isMySQLDbType(dbType):
+	case !sqlcommon.IsMySQLDbType(dbType):
 		builder.WriteString("SELECT e_id FROM (\n")
 		for i, child := range n.children {
 			if i > 0 {
@@ -3764,7 +3760,7 @@ func appendListRegistrationEntriesFilterQuery(filterExp string, builder *strings
 	}
 
 	indentation := 1
-	if req.Pagination != nil && isMySQLDbType(dbType) {
+	if req.Pagination != nil && sqlcommon.IsMySQLDbType(dbType) {
 		filter()
 		builder.WriteString("\tSELECT e_id FROM (\n")
 		indentation = 2
@@ -3809,7 +3805,7 @@ func appendListRegistrationEntriesFilterQuery(filterExp string, builder *strings
 		builder.WriteString(strconv.FormatInt(int64(req.Pagination.PageSize), 10))
 		builder.WriteString("\n")
 
-		if isMySQLDbType(dbType) {
+		if sqlcommon.IsMySQLDbType(dbType) {
 			builder.WriteString("\t) workaround_for_mysql_subquery_limit\n")
 		}
 	}
@@ -3947,6 +3943,7 @@ type entryRow struct {
 	DNSName              sql.NullString
 	RevisionNumber       sql.NullInt64
 	RegJwtSvidTTL        sql.NullInt64
+	RegWitSvidTTL        sql.NullInt64
 	AdditionalAttributes sql.Null[[]byte]
 }
 
@@ -3971,6 +3968,7 @@ func scanEntryRow(rs *sql.Rows, r *entryRow) error {
 		&r.DNSName,
 		&r.RevisionNumber,
 		&r.RegJwtSvidTTL,
+		&r.RegWitSvidTTL,
 		&r.AdditionalAttributes,
 	))
 }
@@ -4025,6 +4023,12 @@ func fillEntryFromRow(entry *common.RegistrationEntry, r *entryRow) error {
 		var err error
 		if entry.JwtSvidTtl, err = util.CheckedCast[int32](r.RegJwtSvidTTL.Int64); err != nil {
 			return sqlcommon.NewSQLError("invalid value for JWT SVID TTL: %s", err)
+		}
+	}
+	if r.RegWitSvidTTL.Valid {
+		var err error
+		if entry.WitSvidTtl, err = util.CheckedCast[int32](r.RegWitSvidTTL.Int64); err != nil {
+			return sqlcommon.NewSQLError("invalid value for WIT SVID TTL: %s", err)
 		}
 	}
 	if r.Hint.Valid {
@@ -4151,7 +4155,7 @@ func updateRegistrationEntry(tx *gorm.DB, e *common.RegistrationEntry, mask *com
 	// Revision number is increased by 1 on every update call
 	entry.RevisionNumber++
 
-	if err := tx.Save(&entry).Error; err != nil {
+	if err := tx.Omit("wit_svid_ttl").Save(&entry).Error; err != nil {
 		return nil, sqlcommon.NewWrappedSQLError(err)
 	}
 
@@ -4644,11 +4648,15 @@ func validateRegistrationEntry(entry *common.RegistrationEntry) error {
 	}
 
 	if entry.X509SvidTtl < 0 {
-		return sqlcommon.NewValidationError("invalid registration entry: X509SvidTtl is not set")
+		return sqlcommon.NewValidationError("invalid registration entry: X509SvidTtl must not be negative")
 	}
 
 	if entry.JwtSvidTtl < 0 {
-		return sqlcommon.NewValidationError("invalid registration entry: JwtSvidTtl is not set")
+		return sqlcommon.NewValidationError("invalid registration entry: JwtSvidTtl must not be negative")
+	}
+
+	if entry.WitSvidTtl < 0 {
+		return sqlcommon.NewValidationError("invalid registration entry: WitSvidTtl must not be negative")
 	}
 
 	return nil
@@ -4684,12 +4692,17 @@ func validateRegistrationEntryForUpdate(entry *common.RegistrationEntry, mask *c
 
 	if (mask == nil || mask.X509SvidTtl) &&
 		(entry.X509SvidTtl < 0) {
-		return sqlcommon.NewValidationError("invalid registration entry: X509SvidTtl is not set")
+		return sqlcommon.NewValidationError("invalid registration entry: X509SvidTtl must not be negative")
 	}
 
 	if (mask == nil || mask.JwtSvidTtl) &&
 		(entry.JwtSvidTtl < 0) {
-		return sqlcommon.NewValidationError("invalid registration entry: JwtSvidTtl is not set")
+		return sqlcommon.NewValidationError("invalid registration entry: JwtSvidTtl must not be negative")
+	}
+
+	if (mask == nil || mask.WitSvidTtl) &&
+		(entry.WitSvidTtl < 0) {
+		return sqlcommon.NewValidationError("invalid registration entry: WitSvidTtl must not be negative")
 	}
 
 	return nil
@@ -4889,54 +4902,6 @@ func bindVarsFn(fn func(int) string, query string) string {
 	return buf.String()
 }
 
-func configValidate(cfg *sqlcommon.Configuration) error {
-	if cfg.DBTypeConfig.DatabaseType == "" {
-		return sqlcommon.NewSQLError("database_type must be set")
-	}
-
-	if cfg.ConnectionString == "" {
-		return sqlcommon.NewSQLError("connection_string must be set")
-	}
-
-	if isMySQLDbType(cfg.DBTypeConfig.DatabaseType) {
-		if err := validateMySQLConfig(cfg, false); err != nil {
-			return err
-		}
-
-		if cfg.RoConnectionString != "" {
-			if err := validateMySQLConfig(cfg, true); err != nil {
-				return err
-			}
-		}
-	}
-
-	if cfg.DBTypeConfig.AWSMySQL != nil {
-		if err := cfg.DBTypeConfig.AWSMySQL.Validate(); err != nil {
-			return err
-		}
-	}
-
-	if cfg.DBTypeConfig.AWSPostgres != nil {
-		if err := cfg.DBTypeConfig.AWSPostgres.Validate(); err != nil {
-			return err
-		}
-	}
-
-	if cfg.DBTypeConfig.AzurePostgres != nil {
-		if err := cfg.DBTypeConfig.AzurePostgres.Validate(); err != nil {
-			return err
-		}
-	}
-
-	if cfg.DBTypeConfig.AzureMySQL != nil {
-		if err := cfg.DBTypeConfig.AzureMySQL.Validate(); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 func queryVersion(ctx context.Context, gormDB *gorm.DB, query string) (string, error) {
 	db := gormDB.DB()
 	if db == nil {
@@ -5039,7 +5004,7 @@ func createCAJournal(tx *gorm.DB, caJournal *datastore.CAJournal) (*datastore.CA
 		ActiveX509AuthorityID: caJournal.ActiveX509AuthorityID,
 	}
 
-	if err := tx.Create(&model).Error; err != nil {
+	if err := tx.Omit("journal_id").Create(&model).Error; err != nil {
 		return nil, sqlcommon.NewWrappedSQLError(err)
 	}
 
@@ -5080,7 +5045,7 @@ func updateCAJournal(tx *gorm.DB, caJournal *datastore.CAJournal) (*datastore.CA
 	model.ActiveX509AuthorityID = caJournal.ActiveX509AuthorityID
 	model.Data = caJournal.Data
 
-	if err := tx.Save(&model).Error; err != nil {
+	if err := tx.Omit("journal_id").Save(&model).Error; err != nil {
 		return nil, sqlcommon.NewWrappedSQLError(err)
 	}
 
@@ -5106,71 +5071,15 @@ func deleteCAJournal(tx *gorm.DB, caJournalID uint) error {
 	return nil
 }
 
-func parseDatabaseTypeASTNode(node ast.Node) (*sqlcommon.DBTypeConfig, error) {
-	lt, ok := node.(*ast.LiteralType)
-	if ok {
-		return &sqlcommon.DBTypeConfig{DatabaseType: strings.Trim(lt.Token.Text, "\"")}, nil
-	}
-
-	// We expect the node to be *ast.ObjectList.
-	objectList, ok := node.(*ast.ObjectList)
-	if !ok {
-		return nil, errors.New("malformed database type configuration")
-	}
-
-	if len(objectList.Items) != 1 {
-		return nil, errors.New("exactly one database type is expected")
-	}
-
-	if len(objectList.Items[0].Keys) != 1 {
-		return nil, errors.New("exactly one key is expected")
-	}
-
-	var data bytes.Buffer
-	if err := printer.DefaultConfig.Fprint(&data, node); err != nil {
-		return nil, err
-	}
-
-	dbTypeConfig := new(sqlcommon.DBTypeConfig)
-	if err := hcl.Decode(dbTypeConfig, data.String()); err != nil {
-		return nil, fmt.Errorf("failed to decode configuration: %w", err)
-	}
-
-	databaseType := strings.Trim(objectList.Items[0].Keys[0].Token.Text, "\"")
-	switch databaseType {
-	case AWSMySQL:
-	case AWSPostgreSQL:
-	case AzurePostgreSQL:
-	case AzureMySQL:
-	default:
-		return nil, fmt.Errorf("unknown database type: %s", databaseType)
-	}
-
-	dbTypeConfig.DatabaseType = databaseType
-	return dbTypeConfig, nil
-}
-
-func isMySQLDbType(dbType string) bool {
-	return dbType == MySQL || dbType == AWSMySQL || dbType == AzureMySQL
-}
-
-func isPostgresDbType(dbType string) bool {
-	return dbType == PostgreSQL || dbType == AWSPostgreSQL || dbType == AzurePostgreSQL
-}
-
-func isSQLiteDbType(dbType string) bool {
-	return dbType == SQLite
-}
-
 // maxPaginationToken returns the largest ID value the dialect's primary key
 // column can represent. Models declare ID as a Go uint, which GORM maps to a
 // signed 32-bit integer on PostgreSQL and an unsigned 32-bit integer on
 // MySQL, so tokens above those bounds can never match an existing row.
 func maxPaginationToken(dbType string) uint64 {
 	switch {
-	case isPostgresDbType(dbType):
+	case sqlcommon.IsPostgresDbType(dbType):
 		return math.MaxInt32
-	case isMySQLDbType(dbType):
+	case sqlcommon.IsMySQLDbType(dbType):
 		return math.MaxUint32
 	default:
 		return math.MaxUint64

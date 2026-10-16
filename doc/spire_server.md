@@ -22,6 +22,7 @@ This document is a configuration reference for SPIRE Server. It includes informa
 | KeyManager         | [aws_kms](/doc/plugin_server_keymanager_aws_kms.md)                                                  | A key manager which manages keys in AWS KMS                                                                                                                         |
 | KeyManager         | [disk](/doc/plugin_server_keymanager_disk.md)                                                        | A key manager which manages keys persisted on disk                                                                                                                  |
 | KeyManager         | [hashicorp_vault](/doc/plugin_server_keymanager_hashicorp_vault.md)                                  | A key manager which manages keys in HashiCorp Vault's Transit Secret Engine                                                                                         |
+| KeyManager         | [kmip](/doc/plugin_server_keymanager_kmip.md)                                                        | A key manager which manages keys in a KMIP-compliant server over binary TTLV/TCP                                                                                    |
 | KeyManager         | [memory](/doc/plugin_server_keymanager_memory.md)                                                    | A key manager which manages unpersisted keys in memory                                                                                                              |
 | CredentialComposer | [uniqueid](/doc/plugin_server_credentialcomposer_uniqueid.md)                                        | Adds the x509UniqueIdentifier attribute to workload X509-SVIDs.                                                                                                     |
 | NodeAttestor       | [aws_iid](/doc/plugin_server_nodeattestor_aws_iid.md)                                                | A node attestor which attests agent identity using an AWS Instance Identity Document                                                                                |
@@ -137,6 +138,7 @@ a no-op, so a scheduled reopen on an idle service does not consume the
 | `named_pipe_name`             | Pipe name of the SPIRE Server API named pipe (Windows only)                                                                                                                                                            | \spire-server\private\api          |
 | `require_pq_kem`              | Require post-quantum-safe KEM on terminating server listeners.                                                                                                                                                         | false                              |
 | `wit_issuer`                  | The issuer claim used when minting WIT-SVIDs                                                                                                                                                                           |                                    |
+| `default_wit_svid_ttl`        | The default WIT-SVID TTL                                                                                                                                                                                               | 1h                                 |
 
 | ratelimit     | Description                                                                                                                                        | Default |
 |:--------------|----------------------------------------------------------------------------------------------------------------------------------------------------|---------|
@@ -274,6 +276,7 @@ server {
             bundle_endpoint_profile "https_spiffe" {
                 endpoint_spiffe_id = "spiffe://domain2.test/beserver"
             }
+            bootstrap_bundle_path = "/etc/spire/domain2.pem"
         }
     }
 }
@@ -290,8 +293,8 @@ This optional section contains the configurables used by SPIRE Server to expose 
 |-----------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | address                                       | IP address where this server will listen for HTTP requests                                                                                                                                                                                         |
 | port                                          | TCP port number where this server will listen for HTTP requests                                                                                                                                                                                    |
-| refresh_hint                                  | Allow manually specifying a [refresh hint](https://github.com/spiffe/spiffe/blob/main/standards/SPIFFE_Trust_Domain_and_Bundle.md#412-refresh-hint). Defaults to 5 minutes. Small values allow to retrieve trust bundle updates in a timely manner |
-| profile "&lt;https_web&vert;https_spiffe&gt;" | Allow to configure bundle profile                                                                                                                                                                                                                  |
+| refresh_hint                                  | Allow manually specifying a [refresh hint](https://github.com/spiffe/spiffe/blob/main/standards/SPIFFE_Trust_Domain_and_Bundle.md#412-refresh-hint). Defaults to 5 minutes. Small values allow retrieving trust bundle updates in a timely manner  |
+| profile "<https_web&vert;https_spiffe>"       | Allows configuring bundle profile                                                                                                                                                                                                                  |
 
 ### Configuration options for `federation.bundle_endpoint.profile`
 
@@ -299,7 +302,7 @@ When setting a `bundle_endpoint`, it is `required` to specify the bundle profile
 
 Allowed profiles:
 
-- `https_web` allow to configure either the [Automated Certificate Management Environment](#configuration-options-for-federationbundle_endpointprofile-https_webacme) or the [serving cert file](#configuration-options-for-federationbundle_endpointprofile-https_webserving_cert_file) section.
+- `https_web` allows configuring either the [Automated Certificate Management Environment](#configuration-options-for-federationbundle_endpointprofile-https_webacme) or the [serving cert file](#configuration-options-for-federationbundle_endpointprofile-https_webserving_cert_file) section.
 - `https_spiffe`
 
 ### Configuration options for `federation.bundle_endpoint.profile "https_web".acme`
@@ -331,12 +334,16 @@ The optional `federates_with` section is a map of bundle endpoint profile config
 |---------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------|---------|
 | bundle_endpoint_url                                           | URL of the SPIFFE bundle endpoint that provides the trust bundle to federate with. Must use the HTTPS protocol. |         |
 | bundle_endpoint_profile "&lt;https_web&vert;https_spiffe&gt;" | Configuration of the SPIFFE endpoint profile type.                                                              |         |
+| bootstrap_bundle_path                                         | Path to a bundle used to authenticate the first `https_spiffe` fetch if none is stored yet.                     |         |
+| bootstrap_bundle_format                                       | Format of `bootstrap_bundle_path`. Either `pem` or `spiffe`.                                                    | pem     |
 
 SPIRE supports the `https_web` and `https_spiffe` bundle endpoint profiles.
 
 The `https_web` profile does not require additional settings.
 
 Trust domains configured with the `https_spiffe` bundle endpoint profile must specify the expected SPIFFE ID of the remote SPIFFE bundle endpoint server using the `endpoint_spiffe_id` setting as part of the configuration.
+
+`bootstrap_bundle_path` replaces the need to run `spire-server bundle set` before the first `https_spiffe` poll. It authenticates that first connection only. The bundle returned by the endpoint is stored with a create, not an update. Subsequent refreshes use the stored bundle. The path is not watched.
 
 For more information about the different profiles defined in SPIFFE, along with the security considerations for setting up SPIFFE Federation, please refer to the [SPIFFE Federation standard](https://github.com/spiffe/spiffe/blob/main/standards/SPIFFE_Federation.md).
 

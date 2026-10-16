@@ -17,6 +17,7 @@ import (
 	"github.com/spiffe/spire/pkg/agent"
 	agentbroker "github.com/spiffe/spire/pkg/agent/broker"
 	"github.com/spiffe/spire/pkg/agent/client"
+	"github.com/spiffe/spire/pkg/agent/manager"
 	"github.com/spiffe/spire/pkg/agent/workloadkey"
 	"github.com/spiffe/spire/pkg/common/fflag"
 	"github.com/spiffe/spire/pkg/common/log"
@@ -38,6 +39,7 @@ type newAgentConfigCase struct {
 	msg                string
 	expectError        bool
 	requireErrorPrefix string
+	env                map[string]string
 	input              func(*Config)
 	logOptions         func(t *testing.T) []log.Option
 	test               func(*testing.T, *agent.Config)
@@ -641,6 +643,11 @@ func TestMergeInput(t *testing.T) {
 	}
 }
 
+var localXDSBootstrapEnv = map[string]string{
+	"GRPC_XDS_BOOTSTRAP":        "",
+	"GRPC_XDS_BOOTSTRAP_CONFIG": `{"xds_servers":[{"server_uri":"localhost:18000","channel_creds":[{"type":"insecure"}]}]}`,
+}
+
 func TestNewAgentConfig(t *testing.T) {
 	cases := []newAgentConfigCase{
 		{
@@ -651,6 +658,78 @@ func TestNewAgentConfig(t *testing.T) {
 			},
 			test: func(t *testing.T, c *agent.Config) {
 				require.Equal(t, "dns:///192.168.1.1:1337", c.ServerAddress)
+			},
+		},
+		{
+			msg: "use_xds produces an xds target from server_address",
+			env: localXDSBootstrapEnv,
+			input: func(c *Config) {
+				c.Agent.ServerAddress = "spire-server"
+				c.Agent.ServerPort = 0
+				c.Agent.Experimental.UseXDS = true
+			},
+			test: func(t *testing.T, c *agent.Config) {
+				require.Equal(t, "xds:///spire-server", c.ServerAddress)
+			},
+		},
+		{
+			msg: "use_xds rejects server_port",
+			env: localXDSBootstrapEnv,
+			input: func(c *Config) {
+				c.Agent.ServerAddress = "spire-server"
+				c.Agent.ServerPort = 1337
+				c.Agent.Experimental.UseXDS = true
+			},
+			expectError:        true,
+			requireErrorPrefix: "server_port cannot be used with use_xds",
+			test: func(t *testing.T, c *agent.Config) {
+				require.Nil(t, c)
+			},
+		},
+		{
+			msg: "use_xds rejects server_address gRPC would truncate",
+			env: localXDSBootstrapEnv,
+			input: func(c *Config) {
+				c.Agent.ServerAddress = "spire-server?x=1"
+				c.Agent.ServerPort = 0
+				c.Agent.Experimental.UseXDS = true
+			},
+			expectError:        true,
+			requireErrorPrefix: "invalid server_address: invalid xDS listener name",
+			test: func(t *testing.T, c *agent.Config) {
+				require.Nil(t, c)
+			},
+		},
+		{
+			msg: "use_xds rejects server_load_balancing_config",
+			env: localXDSBootstrapEnv,
+			input: func(c *Config) {
+				c.Agent.ServerAddress = "spire-server"
+				c.Agent.ServerPort = 0
+				c.Agent.Experimental.UseXDS = true
+				c.Agent.Experimental.ServerLoadBalancingConfig = `[ { "pick_first": {} } ]`
+			},
+			expectError:        true,
+			requireErrorPrefix: "server_load_balancing_config cannot be used with use_xds",
+			test: func(t *testing.T, c *agent.Config) {
+				require.Nil(t, c)
+			},
+		},
+		{
+			msg: "use_xds rejects insecure remote xDS server",
+			env: map[string]string{
+				"GRPC_XDS_BOOTSTRAP":        "",
+				"GRPC_XDS_BOOTSTRAP_CONFIG": `{"xds_servers":[{"server_uri":"xds.example.org:18000","channel_creds":[{"type":"insecure"}]}]}`,
+			},
+			input: func(c *Config) {
+				c.Agent.ServerAddress = "spire-server"
+				c.Agent.ServerPort = 0
+				c.Agent.Experimental.UseXDS = true
+			},
+			expectError:        true,
+			requireErrorPrefix: "invalid xDS configuration:",
+			test: func(t *testing.T, c *agent.Config) {
+				require.Nil(t, c)
 			},
 		},
 		{
@@ -1125,6 +1204,119 @@ func TestNewAgentConfig(t *testing.T) {
 			expectError: true,
 			input: func(c *Config) {
 				c.Agent.Experimental.ServerLoadBalancingConfig = `pick_first`
+			},
+			test: func(t *testing.T, c *agent.Config) {
+				require.Nil(t, c)
+			},
+		},
+		{
+			msg: "sync_retry_backoff defaults to nil",
+			input: func(_ *Config) {
+			},
+			test: func(t *testing.T, c *agent.Config) {
+				require.Nil(t, c.SyncRetryBackoff)
+			},
+		},
+		{
+			msg: "sync_retry_backoff is passed through",
+			input: func(c *Config) {
+				c.Agent.Experimental.SyncRetryBackoff = &syncRetryBackoffConfig{
+					MaxInterval:       "30s",
+					BackoffMultiplier: new(1.5),
+					Jitter:            new(0.0),
+				}
+			},
+			test: func(t *testing.T, c *agent.Config) {
+				require.Equal(t, &manager.SyncRetryBackoffConfig{
+					MaxInterval: 30 * time.Second,
+					Multiplier:  new(1.5),
+					Jitter:      new(0.0),
+				}, c.SyncRetryBackoff)
+			},
+		},
+		{
+			msg:                "invalid sync_retry_backoff max_interval returns an error",
+			expectError:        true,
+			requireErrorPrefix: "could not parse sync_retry_backoff.max_interval",
+			input: func(c *Config) {
+				c.Agent.Experimental.SyncRetryBackoff = &syncRetryBackoffConfig{MaxInterval: "moo"}
+			},
+			test: func(t *testing.T, c *agent.Config) {
+				require.Nil(t, c)
+			},
+		},
+		{
+			msg:                "zero sync_retry_backoff max_interval returns an error",
+			expectError:        true,
+			requireErrorPrefix: "sync_retry_backoff.max_interval (0s) must be greater than 0",
+			input: func(c *Config) {
+				c.Agent.Experimental.SyncRetryBackoff = &syncRetryBackoffConfig{MaxInterval: "0s"}
+			},
+			test: func(t *testing.T, c *agent.Config) {
+				require.Nil(t, c)
+			},
+		},
+		{
+			msg:                "negative sync_retry_backoff max_interval returns an error",
+			expectError:        true,
+			requireErrorPrefix: "sync_retry_backoff.max_interval (-1s) must be greater than 0",
+			input: func(c *Config) {
+				c.Agent.Experimental.SyncRetryBackoff = &syncRetryBackoffConfig{MaxInterval: "-1s"}
+			},
+			test: func(t *testing.T, c *agent.Config) {
+				require.Nil(t, c)
+			},
+		},
+		{
+			msg:                "sync_retry_backoff max_interval lower than the sync interval returns an error",
+			expectError:        true,
+			requireErrorPrefix: "effective sync_retry_backoff.max_interval (1s) must not be less than the sync interval (5s)",
+			input: func(c *Config) {
+				c.Agent.Experimental.SyncRetryBackoff = &syncRetryBackoffConfig{MaxInterval: "1s"}
+			},
+			test: func(t *testing.T, c *agent.Config) {
+				require.Nil(t, c)
+			},
+		},
+		{
+			msg:                "sync interval higher than the max interval it defaults to returns an error",
+			expectError:        true,
+			requireErrorPrefix: "effective sync_retry_backoff.max_interval (8m0s) must not be less than the sync interval (10m0s)",
+			input: func(c *Config) {
+				c.Agent.Experimental.SyncInterval = "10m"
+				c.Agent.Experimental.SyncRetryBackoff = &syncRetryBackoffConfig{}
+			},
+			test: func(t *testing.T, c *agent.Config) {
+				require.Nil(t, c)
+			},
+		},
+		{
+			msg: "sync_retry_backoff max_interval is compared against the configured sync interval",
+			input: func(c *Config) {
+				c.Agent.Experimental.SyncInterval = "500ms"
+				c.Agent.Experimental.SyncRetryBackoff = &syncRetryBackoffConfig{MaxInterval: "1s"}
+			},
+			test: func(t *testing.T, c *agent.Config) {
+				require.Equal(t, &manager.SyncRetryBackoffConfig{MaxInterval: time.Second}, c.SyncRetryBackoff)
+			},
+		},
+		{
+			msg:                "sync_retry_backoff backoff_multiplier lower than one returns an error",
+			expectError:        true,
+			requireErrorPrefix: "sync_retry_backoff.backoff_multiplier (0.50) must not be less than 1",
+			input: func(c *Config) {
+				c.Agent.Experimental.SyncRetryBackoff = &syncRetryBackoffConfig{BackoffMultiplier: new(0.5)}
+			},
+			test: func(t *testing.T, c *agent.Config) {
+				require.Nil(t, c)
+			},
+		},
+		{
+			msg:                "sync_retry_backoff jitter out of range returns an error",
+			expectError:        true,
+			requireErrorPrefix: "sync_retry_backoff.jitter (1.00) must be in the [0, 1) range",
+			input: func(c *Config) {
+				c.Agent.Experimental.SyncRetryBackoff = &syncRetryBackoffConfig{Jitter: new(1.0)}
 			},
 			test: func(t *testing.T, c *agent.Config) {
 				require.Nil(t, c)
@@ -1740,6 +1932,10 @@ func TestNewAgentConfig(t *testing.T) {
 		testCase.input(input)
 
 		t.Run(testCase.msg, func(t *testing.T) {
+			for k, v := range testCase.env {
+				t.Setenv(k, v)
+			}
+
 			var logOpts []log.Option
 			if testCase.logOptions != nil {
 				logOpts = testCase.logOptions(t)

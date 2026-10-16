@@ -120,6 +120,8 @@ When `experimental.require_pq_kem` is enabled, it overrides `min_tls_version` an
 | `ratelimit`                    | Optional per-caller rate limiting for Workload API and SDS methods, enforced after workload attestation. See [Workload API Rate Limiting](#workload-api-rate-limiting) for details. |                         |
 | `broker`                       | Optional SPIFFE Broker API endpoint configuration. See [SPIFFE Broker API](#spiffe-broker-api).                                                                                     |                         |
 | `server_load_balancing_config` | The load balancing policies used for connections to the SPIRE server. See [Server Load Balancing](#server-load-balancing).                                                          | round robin             |
+| `sync_retry_backoff`           | Backoff applied between failed synchronizations with the SPIRE server. See [Sync Retry Backoff](#sync-retry-backoff).                                                               |                         |
+| `use_xds`                      | Resolve the SPIRE server via xDS instead of DNS. See [xDS Server Resolution](#xds-server-resolution).                                                                               | false                   |
 
 ### Server Load Balancing
 
@@ -132,6 +134,81 @@ agent {
     experimental {
         server_load_balancing_config = "[ { \"pick_first\": { \"shuffleAddressList\": true } } ]"
     }
+}
+```
+
+### Sync Retry Backoff
+
+When a synchronization with the SPIRE server fails, the agent retries it with an exponential backoff. The backoff starts at `sync_interval` and, by default, is multiplied by 1.5 after each failure, is randomized by 10%, and is capped at 48 times `sync_interval` (at most 8 minutes). With the default `sync_interval` of 5 seconds that means the agent can wait up to 4 minutes between retries, which is longer than some deployments can tolerate for a transient failure.
+
+The `sync_retry_backoff` block configures how that backoff grows and how far it goes. Every field is optional; omitted fields keep the default described above.
+
+| sync_retry_backoff   | Description                                                                            | Default                                       |
+|:--------------------:|:--------------------------------------------------------------------------------------:|:---------------------------------------------:|
+| `max_interval`       | Upper limit of the interval between retries. Must not be less than `sync_interval`.    | 48 times `sync_interval`, capped at 8 minutes |
+| `backoff_multiplier` | Factor the interval is multiplied by after each failure. Must not be less than 1.      | 1.5                                           |
+| `jitter`             | Fraction of the interval the interval is randomized by. Must be in the `[0, 1)` range. | 0.10                                          |
+
+For example, to cap how long the agent waits between retries:
+
+```hcl
+agent {
+    experimental {
+        sync_retry_backoff {
+            max_interval = "30s"
+            backoff_multiplier = 2
+            jitter = 0.1
+        }
+    }
+}
+```
+
+### xDS Server Resolution
+
+When `use_xds` is enabled, the agent finds SPIRE servers through an xDS server instead of DNS. `server_address` is used as the xDS listener name, so it must not contain `?`, `#` or percent-escapes, and `server_port` must not be set; the port comes from the xDS server.
+
+The gRPC xDS bootstrap is read from the `GRPC_XDS_BOOTSTRAP` (file path) or `GRPC_XDS_BOOTSTRAP_CONFIG` (inline JSON) environment variables. These are not agent configuration. The agent fails to start if neither is set.
+
+`use_xds` cannot be used together with `server_load_balancing_config`.
+
+The xDS server decides which SPIRE server the agent connects to, so a compromised xDS server can redirect the agent or cut it off. It cannot make the agent trust a wrong server, because the agent still verifies the server's SPIFFE ID against the bundle. To protect this channel, each xDS server must be local (unix socket or loopback) or use `tls` channel credentials.
+
+For example:
+
+```hcl
+agent {
+    server_address = "spire-server"
+    experimental {
+        use_xds = true
+    }
+}
+```
+
+With a bootstrap file pointed to by `GRPC_XDS_BOOTSTRAP`:
+
+```json
+{
+  "xds_servers": [
+    {
+      "server_uri": "xds.example.org:18000",
+      "channel_creds": [
+        {
+          "type": "tls",
+          "config": {
+            "ca_certificate_file": "/opt/spire/conf/agent/xds-ca.crt.pem"
+          }
+        }
+      ],
+      "server_features": ["xds_v3"]
+    }
+  ],
+  "node": {
+    "id": "spire-agent",
+    "locality": {
+      "region": "dc1",
+      "zone": "zone1"
+    }
+  }
 }
 ```
 

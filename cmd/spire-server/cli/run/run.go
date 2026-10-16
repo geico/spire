@@ -121,6 +121,7 @@ type experimentalConfig struct {
 	RequirePQKEM            bool                        `hcl:"require_pq_kem"`
 	WITKeyType              string                      `hcl:"wit_key_type"`
 	WITIssuer               string                      `hcl:"wit_issuer"`
+	DefaultWITSVIDTTL       string                      `hcl:"default_wit_svid_ttl"`
 
 	Flags fflag.RawConfig `hcl:"feature_flags"`
 
@@ -184,6 +185,8 @@ type bundleEndpointACMEConfig struct {
 type federatesWithConfig struct {
 	BundleEndpointURL     string                 `hcl:"bundle_endpoint_url"`
 	BundleEndpointProfile ast.Node               `hcl:"bundle_endpoint_profile"`
+	BootstrapBundlePath   string                 `hcl:"bootstrap_bundle_path"`
+	BootstrapBundleFormat string                 `hcl:"bootstrap_bundle_format"`
 	UnusedKeyPositions    map[string][]token.Pos `hcl:",unusedKeyPositions"`
 }
 
@@ -523,6 +526,9 @@ func newServerConfig(c *Config, logOptions []log.Option, allowUnknownConfig, ski
 				if err != nil {
 					return nil, fmt.Errorf("error parsing federation relationship for trust domain %q: %w", trustDomain, err)
 				}
+				if err := validateFederatesWithBootstrap(td, trustDomainConfig); err != nil {
+					return nil, fmt.Errorf("error parsing federation relationship for trust domain %q: %w", trustDomain, err)
+				}
 			default:
 				return nil, fmt.Errorf("federation configuration for trust domain %q: missing bundle endpoint configuration", trustDomain)
 			}
@@ -595,6 +601,16 @@ func newServerConfig(c *Config, logOptions []log.Option, allowUnknownConfig, ski
 		sc.JWTSVIDTTL = credtemplate.DefaultJWTSVIDTTL
 	}
 
+	if c.Server.Experimental.DefaultWITSVIDTTL != "" {
+		ttl, err := time.ParseDuration(c.Server.Experimental.DefaultWITSVIDTTL)
+		if err != nil {
+			return nil, fmt.Errorf("could not parse default WIT SVID ttl %q: %w", c.Server.Experimental.DefaultWITSVIDTTL, err)
+		}
+		sc.WITSVIDTTL = ttl
+	} else {
+		sc.WITSVIDTTL = credtemplate.DefaultWITSVIDTTL
+	}
+
 	if c.Server.CATTL != "" {
 		ttl, err := time.ParseDuration(c.Server.CATTL)
 		if err != nil {
@@ -619,6 +635,10 @@ func newServerConfig(c *Config, logOptions []log.Option, allowUnknownConfig, ski
 		{
 			name: "default_jwt_svid_ttl",
 			ttl:  sc.JWTSVIDTTL,
+		},
+		{
+			name: "default_wit_svid_ttl",
+			ttl:  sc.WITSVIDTTL,
 		},
 	}
 	if sc.AgentTTL != 0 {
@@ -923,10 +943,41 @@ func parseBundleEndpointProfile(config federatesWithConfig) (trustDomainConfig *
 		return nil, errors.New(`no bundle endpoint profile defined; current supported profiles are "https_spiffe" and 'https_web"`)
 	}
 
+	format := strings.ToLower(strings.TrimSpace(config.BootstrapBundleFormat))
+	if config.BootstrapBundlePath != "" && format == "" {
+		format = bundleClient.BootstrapBundleFormatPEM
+	}
+
 	return &bundleClient.TrustDomainConfig{
-		EndpointURL:     config.BundleEndpointURL,
-		EndpointProfile: endpointProfile,
+		EndpointURL:           config.BundleEndpointURL,
+		EndpointProfile:       endpointProfile,
+		BootstrapBundlePath:   config.BootstrapBundlePath,
+		BootstrapBundleFormat: format,
 	}, nil
+}
+
+func validateFederatesWithBootstrap(td spiffeid.TrustDomain, cfg *bundleClient.TrustDomainConfig) error {
+	if cfg.BootstrapBundleFormat != "" && cfg.BootstrapBundlePath == "" {
+		return errors.New("bootstrap_bundle_format is set but bootstrap_bundle_path is empty")
+	}
+	if cfg.BootstrapBundlePath == "" {
+		return nil
+	}
+
+	switch cfg.BootstrapBundleFormat {
+	case bundleClient.BootstrapBundleFormatPEM, bundleClient.BootstrapBundleFormatSPIFFE:
+	default:
+		return fmt.Errorf("bootstrap_bundle_format must be %q or %q", bundleClient.BootstrapBundleFormatPEM, bundleClient.BootstrapBundleFormatSPIFFE)
+	}
+
+	spiffeProfile, ok := cfg.EndpointProfile.(bundleClient.HTTPSSPIFFEProfile)
+	if !ok {
+		return errors.New("bootstrap_bundle_path is only supported with the https_spiffe bundle endpoint profile")
+	}
+	if spiffeProfile.EndpointSPIFFEID.TrustDomain() != td {
+		return errors.New("bootstrap_bundle_path is only supported when the endpoint SPIFFE ID is in the federated trust domain")
+	}
+	return nil
 }
 
 func parseBundleEndpointProfileASTNode(node ast.Node) (string, error) {
